@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ManojVihari/Fluxen/internal/auth"
+	"github.com/ManojVihari/Fluxen/internal/policy"
 	"github.com/ManojVihari/Fluxen/internal/repository"
 )
 
@@ -30,6 +31,18 @@ func UsageHandler(w http.ResponseWriter, r *http.Request) {
 	apiKey, err := repository.GetAPIKey(keyHash)
 	if err != nil {
 		http.Error(w, "Invalid API Key", http.StatusUnauthorized)
+		return
+	}
+
+	// -------- ROLE CHECK --------
+	rolePolicy, err := repository.GetRolePolicy(apiKey.RoleName)
+	if err != nil {
+		http.Error(w, "Failed to load role policy", http.StatusInternalServerError)
+		return
+	}
+
+	if err := policy.CheckUsagePermission(*rolePolicy); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 
