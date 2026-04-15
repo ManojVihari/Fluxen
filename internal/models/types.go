@@ -39,6 +39,22 @@ type APIKey struct {
 	Budget         float64
 	Provider       string
 	ProviderAPIKey string
+	RoleID         int
+	RoleName       string
+}
+
+type Role struct {
+	ID     int        `json:"id"`
+	Name   string     `json:"name"`
+	Policy RolePolicy `json:"policy"`
+}
+
+type RolePolicy struct {
+	AllowedModels  []string `json:"allowed_models"`  // empty = all allowed
+	MaxTokensPerReq int     `json:"max_tokens_per_req"` // 0 = unlimited
+	RateLimit       int     `json:"rate_limit"`         // requests per minute, 0 = unlimited
+	AllowChat       bool    `json:"allow_chat"`
+	AllowUsage      bool    `json:"allow_usage"`
 }
 
 type UsageSummary struct {
