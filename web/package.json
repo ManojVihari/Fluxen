@@ -1,0 +1,11 @@
+{
+  "name": "fluxen-web",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev:dashboard": "pnpm --filter fluxen-dashboard dev",
+    "dev:website": "pnpm --filter fluxen-website dev",
+    "build": "pnpm --filter fluxen-dashboard build && pnpm --filter fluxen-website build",
+    "lint": "pnpm --filter fluxen-dashboard lint && pnpm --filter fluxen-website lint"
+  }
+}

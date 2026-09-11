@@ -1,0 +1,37 @@
+name: CI
+
+# Phase 0 CI: go vet + go test for the backend, pnpm build for both Next.js
+# apps. Contract-drift checks, load tests, and the detector-quality suite
+# are added by the phases that introduce those things (Part K).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./... -v
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      - run: pnpm build
+        working-directory: web

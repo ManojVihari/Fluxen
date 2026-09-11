@@ -1,0 +1,21 @@
+# Go
+/bin/
+*.test
+*.out
+
+# Node / pnpm
+node_modules/
+.next/
+out/
+.turbo/
+
+# Env
+.env
+.env.local
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

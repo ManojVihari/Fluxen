@@ -1,0 +1,28 @@
+# Combined gateway + control binary (Part B.1/B.4). This is the default
+# deployment target — cmd/fluxen-gateway and cmd/fluxen-control split images
+# are an opt-in scaling step added later, not built here.
+
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/fluxen ./cmd/fluxen
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/fluxenctl ./cmd/fluxenctl
+
+# alpine (not distroless) so docker-compose's HEALTHCHECK can use wget
+# against /healthz without adding a separate healthcheck binary.
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates && \
+    addgroup -S fluxen && adduser -S fluxen -G fluxen
+COPY --from=build /out/fluxen /usr/local/bin/fluxen
+COPY --from=build /out/fluxenctl /usr/local/bin/fluxenctl
+USER fluxen
+
+EXPOSE 8080
+HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=5 \
+    CMD wget -q -O- http://127.0.0.1:8080/healthz || exit 1
+
+ENTRYPOINT ["/usr/local/bin/fluxen"]

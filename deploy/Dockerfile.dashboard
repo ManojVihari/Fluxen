@@ -1,0 +1,27 @@
+# The dashboard is the only Next.js app deployed via docker-compose in V1
+# (Part B.4) — the public website is statically exported and deployed
+# independently (Part B.3).
+#
+# This build keeps the pnpm workspace intact through build and runtime
+# rather than trying to prune it into a standalone bundle — simpler and
+# more reliable for Phase 0's scope than a partial multi-stage copy.
+
+FROM node:22-alpine AS build
+WORKDIR /app
+RUN corepack enable
+COPY web/ .
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter fluxen-dashboard build
+
+FROM node:22-alpine AS run
+WORKDIR /app
+RUN corepack enable && addgroup -S fluxen && adduser -S fluxen -G fluxen
+ENV NODE_ENV=production
+COPY --from=build /app /app
+USER fluxen
+
+EXPOSE 3000
+HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=5 \
+    CMD wget -q -O- http://127.0.0.1:3000/ || exit 1
+
+CMD ["pnpm", "--filter", "fluxen-dashboard", "start"]
