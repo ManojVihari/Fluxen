@@ -1,9 +1,9 @@
 // Package api is the control-plane HTTP API the dashboard talks to
-// (Part C.1: "control-plane HTTP API (dashboard-facing)"). Phase 1
-// implements exactly the setup/auth/applications/keys surface needed to
-// create the first application and API key (Part L Phase 1 API
-// contracts) — everything else (overview, requests, opportunities, ...)
-// arrives in later phases.
+// (Part C.1: "control-plane HTTP API (dashboard-facing)"). Phase 1 added
+// setup/auth/applications/keys; Phase 2 adds the per-application
+// summary/timeseries/models rollup reads Application Detail needs —
+// everything else (overview, requests, opportunities, ...) arrives in
+// later phases.
 package api
 
 import (
@@ -23,6 +23,7 @@ type Server struct {
 	Users    *store.Users
 	Apps     *store.Applications
 	Keys     *store.APIKeys
+	Rollups  *store.Rollups
 	Sessions *auth.SessionStore
 
 	// KeyResolver is the gateway's own resolver. In Phase 1's combined
@@ -70,6 +71,9 @@ func (s *Server) Router() chi.Router {
 			r.Use(s.requireAuth)
 			r.Post("/applications", s.handleCreateApplication)
 			r.Get("/applications", s.handleListApplications)
+			r.Get("/applications/{appID}/summary", s.handleApplicationSummary)
+			r.Get("/applications/{appID}/timeseries", s.handleApplicationTimeseries)
+			r.Get("/applications/{appID}/models", s.handleApplicationModels)
 			r.Post("/applications/{appID}/keys", s.handleCreateKey)
 			r.Delete("/keys/{keyID}", s.handleRevokeKey)
 		})

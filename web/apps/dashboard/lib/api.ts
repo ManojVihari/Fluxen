@@ -99,7 +99,52 @@ export const api = {
   createKey: (appId: string, body: { name: string }) =>
     post<ApiKey>(`/api/v1/applications/${appId}/keys`, body),
   revokeKey: (keyId: string) => del<void>(`/api/v1/keys/${keyId}`),
+
+  applicationSummary: (appId: string, range: RangeValue) =>
+    get<ApplicationSummary>(`/api/v1/applications/${appId}/summary?range=${range}`),
+  applicationTimeseries: (appId: string, range: RangeValue) =>
+    get<DailyPoint[]>(`/api/v1/applications/${appId}/timeseries?range=${range}`),
+  applicationModels: (appId: string, range: RangeValue) =>
+    get<ModelBreakdown[]>(`/api/v1/applications/${appId}/models?range=${range}`),
 };
+
+// Matches the ?range= values internal/api/timerange.go accepts.
+export type RangeValue = "24h" | "7d" | "30d" | "90d";
+
+export interface ApplicationSummary {
+  range_start: string;
+  range_end: string;
+  requests: number;
+  errors: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_micro: number;
+  avg_duration_ms: number;
+}
+
+export interface DailyPoint {
+  day: string;
+  requests: number;
+  errors: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_micro: number;
+  avg_duration_ms: number;
+}
+
+export interface ModelBreakdown {
+  provider: string;
+  model: string;
+  requests: number;
+  errors: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_micro: number;
+  avg_duration_ms: number;
+}
 
 export interface Application {
   id: string;

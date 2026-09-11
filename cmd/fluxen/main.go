@@ -1,11 +1,12 @@
 // Command fluxen is the combined gateway + control binary and the default
 // deployment target (Part B.1/B.4 of the implementation specification).
 //
-// Phase 1 wires the first real product surface on top of Phase 0's
-// foundation: the control API (setup, auth, applications, keys) and the
-// OpenAI-compatible gateway (Application → Fluxen Gateway → Provider →
-// Response). Everything else — policy/cache/routing, Gemini/Ollama,
-// detectors — arrives in later phases.
+// Phase 1 added the control API (setup, auth, applications, keys) and the
+// OpenAI-compatible gateway. Phase 2 adds the in-process job scheduler
+// (Part C.7) running the rollup.hourly/rollup.daily jobs that turn raw
+// requests into the aggregates Application Detail reads. Everything else
+// — policy/cache/routing, Gemini/Ollama, detectors — arrives in later
+// phases.
 package main
 
 import (
@@ -25,7 +26,9 @@ import (
 	"fluxen/internal/health"
 	"fluxen/internal/ingest"
 	"fluxen/internal/observability"
+	"fluxen/internal/rollup"
 	"fluxen/internal/store"
+	"fluxen/internal/worker"
 	"fluxen/pkg/pricing"
 	"fluxen/pkg/providers"
 	"fluxen/pkg/providers/openai"
@@ -76,6 +79,7 @@ func run() error {
 	orgs := store.NewOrganizations(pool)
 	users := store.NewUsers(pool)
 	requests := store.NewRequests(pool)
+	rollups := store.NewRollups(pool)
 
 	// --- gateway ---
 	keyResolver := auth.NewResolver(keys)
@@ -100,11 +104,39 @@ func run() error {
 		Users:           users,
 		Apps:            apps,
 		Keys:            keys,
+		Rollups:         rollups,
 		Sessions:        auth.NewSessionStore(redisClient),
 		KeyResolver:     keyResolver,
 		DashboardOrigin: cfg.DashboardOrigin,
 		Logger:          logger,
 	})
+
+	// --- background jobs (Part C.7) ---
+	scheduler := worker.NewScheduler(logger)
+	scheduler.Register(worker.Job{
+		Name:     "rollup.hourly",
+		Interval: 5 * time.Minute,
+		Run: func(ctx context.Context) error {
+			from, to := rollup.HourlyWindow(time.Now())
+			return rollup.ComputeHourly(ctx, pool, from, to)
+		},
+	})
+	scheduler.Register(worker.Job{
+		Name:     "rollup.daily",
+		Interval: time.Hour,
+		Run: func(ctx context.Context) error {
+			from, to := rollup.DailyWindow(time.Now())
+			return rollup.ComputeDaily(ctx, pool, from, to)
+		},
+	})
+
+	schedulerCtx, stopScheduler := context.WithCancel(context.Background())
+	defer stopScheduler() // idempotent; covers every early-return path below
+	schedulerDone := make(chan struct{})
+	go func() {
+		scheduler.Run(schedulerCtx)
+		close(schedulerDone)
+	}()
 
 	deps := map[string]health.Pinger{
 		"postgres": pool,
@@ -147,6 +179,13 @@ func run() error {
 	case <-writerDone:
 	case <-time.After(5 * time.Second):
 		logger.Warn("fluxen: ingest writer did not finish flushing within the shutdown grace period")
+	}
+
+	stopScheduler()
+	select {
+	case <-schedulerDone:
+	case <-time.After(5 * time.Second):
+		logger.Warn("fluxen: background job scheduler did not stop within the shutdown grace period")
 	}
 
 	logger.Info("fluxen: shutdown complete")

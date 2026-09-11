@@ -9,14 +9,16 @@ Fluxen is a self-hosted AI traffic gateway and optimization platform. See:
 
 ## Current status
 
-**Phase 0 — Foundation** and **Phase 1 — First AI Request** are implemented.
+**Phase 0 — Foundation**, **Phase 1 — First AI Request**, and **Phase 2 — First Understanding** are implemented.
 
 - Repository structure, local dev loop, Postgres + Redis connectivity with migrations, structured logging, health/readiness/metrics endpoints.
 - A control API (`/api/v1/...`) for first-run setup, login/logout, applications, and API keys.
 - An OpenAI-compatible gateway (`/v1/chat/completions`) that authenticates by API key, proxies to real OpenAI (streaming and non-streaming), and persists every request — attributed, priced, and token-counted — to Postgres.
-- A minimal dashboard: setup wizard, login, applications list/create, and a connect screen that issues an API key once with copy-paste Python/Node/curl snippets.
+- An in-process background scheduler that rolls raw requests up into hourly/daily aggregates, and a control API surface (`summary`/`timeseries`/`models`) that reads them.
+- A dashboard: setup wizard, login, applications list (with 30-day spend/requests), an Application Detail view (Usage & Cost and Models tabs), and a connect screen that issues an API key once with copy-paste Python/Node/curl snippets.
+- `fluxenctl seed --demo` — seeds a demo organization, a `document-ai` application, and ~30 days of realistic synthetic traffic (with a deliberately over-used premium model) so the product can be explored without waiting for real traffic.
 
-Not yet implemented (later phases, per the spec): any analytics/rollups or Application Detail view (Phase 2), Gemini/Ollama (Phase 7), caching/rate limits/budgets/model routing (Phase 5), and the optimization loop — detectors, simulation, apply, measure (Phases 3, 4, 5, 6).
+Not yet implemented (later phases, per the spec): any optimization opportunity/detector, efficiency score, Overview page, Requests investigation screen, or Policies (Phases 3–6), and Gemini/Ollama/caching/rate limits/budgets/model routing (Phases 5, 7).
 
 ## Quickstart (Docker Compose)
 
@@ -47,7 +49,17 @@ curl http://localhost:8080/metrics   # Prometheus metrics
 
 Open the dashboard at [http://localhost:3000](http://localhost:3000) — it routes you to the setup wizard on first run.
 
-### Connect an application
+### See it with demo data
+
+The fastest way to see Application Detail with real-looking data, without connecting anything yourself:
+
+```bash
+docker compose exec fluxen fluxenctl seed --demo
+```
+
+This creates an organization (owner: `owner@example.com` / `supersecret123`, only if no organization exists yet), an application named "Document AI", and ~30 days of synthetic multi-model traffic — then sign in and open it from **Applications**. Safe to run more than once; it no-ops if the application already has traffic.
+
+### Connect a real application
 
 1. Open [http://localhost:3000](http://localhost:3000), complete the setup wizard (creates your organization and owner account), and you'll land on **Applications**.
 2. Click **New application**, give it a name (e.g. "Document AI").
@@ -64,7 +76,9 @@ Open the dashboard at [http://localhost:3000](http://localhost:3000) — it rout
    )
    ```
 
-For the gateway to actually reach OpenAI, set `OPENAI_API_KEY` before starting the stack (see below) — without it, the gateway still runs, but every chat request returns `503 no_provider_credential`.
+5. Open the application in the dashboard — usage, cost, and model mix appear within a few minutes (the rollup job that powers Application Detail runs every 5 minutes; a fresh request is visible sooner via the API, `GET /api/v1/applications/{id}/summary`, but the dashboard reads the rolled-up view).
+
+For the gateway to actually reach OpenAI, set `OPENAI_API_KEY` before starting the stack — without it, the gateway still runs, but every chat request returns `503 no_provider_credential`.
 
 ```bash
 export OPENAI_API_KEY=sk-...
@@ -86,12 +100,13 @@ export $(grep -v '^#' .env | xargs)
 go run ./cmd/fluxen
 ```
 
-Manage migrations directly with `fluxenctl`:
+Manage migrations and demo data with `fluxenctl`:
 
 ```bash
 go run ./cmd/fluxenctl migrate up
 go run ./cmd/fluxenctl migrate status
 go run ./cmd/fluxenctl migrate down
+go run ./cmd/fluxenctl seed --demo
 ```
 
 Run tests:
@@ -127,19 +142,24 @@ See [`.env.example`](./.env.example) for the full list. The two that matter for 
 | `OPENAI_API_KEY` | no | The gateway's OpenAI credential — without it, `/v1/chat/completions` returns `503` until set. (Phase 1 uses one deployment-wide key; per-application, UI-managed provider credentials arrive in a later phase.) |
 | `FLUXEN_DASHBOARD_ORIGIN` | no | Browser origin the control API allows via CORS (default `http://localhost:3000`) |
 
-## API surface (Phase 1)
+## API surface
 
 **Control API** (session-cookie auth, except setup/login):
 
 ```text
-GET/POST /api/v1/setup             first-run status / create org + owner
+GET/POST /api/v1/setup                            first-run status / create org + owner
 POST     /api/v1/auth/login
 POST     /api/v1/auth/logout
 GET      /api/v1/auth/session
 GET/POST /api/v1/applications
+GET      /api/v1/applications/{id}/summary?range=  cost/usage/errors/latency, one range window
+GET      /api/v1/applications/{id}/timeseries?range=   the same, one row per day
+GET      /api/v1/applications/{id}/models?range=   breakdown by (provider, model), cost descending
 POST     /api/v1/applications/{id}/keys
 DELETE   /api/v1/keys/{id}
 ```
+
+`range` accepts `24h`, `7d`, `30d` (default), `90d`.
 
 **Gateway** (API-key auth via `Authorization: Bearer fx_live_...`):
 
@@ -150,19 +170,22 @@ POST /v1/chat/completions          OpenAI-compatible, streaming and non-streamin
 ## Repository layout
 
 ```text
-cmd/fluxen          combined gateway + control binary (the default deployment target)
-cmd/fluxenctl        admin CLI (migrations; more subcommands arrive with later phases)
+cmd/fluxen           combined gateway + control binary (the default deployment target)
+cmd/fluxenctl        admin CLI (migrations, demo seeding)
 internal/config      env config, validated at boot
 internal/auth        password hashing, API keys, session store, key resolver
-internal/store       Postgres access: applications, api_keys, users, organizations, requests
+internal/store       Postgres access: applications, api_keys, users, organizations, requests, rollups
 internal/gateway     the OpenAI-compatible ingress: auth, pipeline, streaming
 internal/ingest      async bounded queue + batch writer from gateway to Postgres
+internal/rollup      idempotent hourly/daily aggregation of requests into the rollup tables
+internal/worker      the in-process background job scheduler
 internal/api         the control-plane HTTP API the dashboard talks to
 internal/health      dependency health checks (/readyz)
 internal/observability  structured logging, Prometheus metrics
 pkg/types            provider-neutral request/response/usage types
 pkg/providers/openai OpenAI adapter (translation, streaming, errors)
 pkg/pricing          embedded pricing catalog + cost calculation
+tools/trafficgen     synthetic multi-day, multi-model traffic generator (used by `fluxenctl seed`)
 db/migrations/       goose SQL migrations, embedded into the fluxen binary
 web/apps/dashboard   the authenticated product (Next.js)
 web/apps/website     the public marketing/docs site (Next.js, statically exported)

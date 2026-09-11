@@ -24,8 +24,10 @@ import (
 // newTestEnv stands up disposable Postgres + Redis containers, applies
 // migrations, and returns a fully-wired API Server plus an httptest
 // client to exercise it — the same combined-binary wiring cmd/fluxen uses
-// in production.
-func newTestEnv(t *testing.T) (*Server, *http.Client, string) {
+// in production. It also returns the pool so rollup-endpoint tests can
+// seed request_rollup_daily/application_daily directly (internal/rollup's
+// compute step has its own tests; these exercise the read-side API only).
+func newTestEnv(t *testing.T) (*Server, *http.Client, string, *pgxpool.Pool) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping testcontainers-based api test in -short mode")
@@ -91,6 +93,7 @@ func newTestEnv(t *testing.T) (*Server, *http.Client, string) {
 		Users:    store.NewUsers(pool),
 		Apps:     apps,
 		Keys:     keys,
+		Rollups:  store.NewRollups(pool),
 		Sessions: auth.NewSessionStore(redisClient),
 	})
 
@@ -100,7 +103,7 @@ func newTestEnv(t *testing.T) (*Server, *http.Client, string) {
 	client := ts.Client()
 	client.Jar = mustCookieJar(t)
 
-	return srv, client, ts.URL
+	return srv, client, ts.URL, pool
 }
 
 func mustCookieJar(t *testing.T) http.CookieJar {
@@ -142,7 +145,7 @@ func decodeJSON(t *testing.T, resp *http.Response, v any) {
 }
 
 func TestSetup_StatusFalseBeforeSetup(t *testing.T) {
-	_, client, baseURL := newTestEnv(t)
+	_, client, baseURL, _ := newTestEnv(t)
 
 	resp := doJSON(t, client, http.MethodGet, baseURL+"/api/v1/setup", nil)
 	defer resp.Body.Close()
@@ -155,7 +158,7 @@ func TestSetup_StatusFalseBeforeSetup(t *testing.T) {
 }
 
 func TestFullJourney_SetupLoginCreateAppIssueKeyRevoke(t *testing.T) {
-	_, client, baseURL := newTestEnv(t)
+	_, client, baseURL, _ := newTestEnv(t)
 
 	// 1. Setup
 	resp := doJSON(t, client, http.MethodPost, baseURL+"/api/v1/setup", setupRequest{
@@ -244,7 +247,7 @@ func TestFullJourney_SetupLoginCreateAppIssueKeyRevoke(t *testing.T) {
 }
 
 func TestLogin_WrongPasswordRejected(t *testing.T) {
-	_, client, baseURL := newTestEnv(t)
+	_, client, baseURL, _ := newTestEnv(t)
 
 	setupResp := doJSON(t, client, http.MethodPost, baseURL+"/api/v1/setup", setupRequest{
 		OrgName: "Acme", Email: "owner@example.com", Password: "supersecret123",
@@ -262,11 +265,128 @@ func TestLogin_WrongPasswordRejected(t *testing.T) {
 }
 
 func TestApplications_RequireAuth(t *testing.T) {
-	_, client, baseURL := newTestEnv(t)
+	_, client, baseURL, _ := newTestEnv(t)
 
 	resp := doJSON(t, client, http.MethodGet, baseURL+"/api/v1/applications", nil)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 without a session, got %d", resp.StatusCode)
+	}
+}
+
+// setUpAndCreateApp is the common prefix for the rollup-endpoint tests:
+// setup (which also logs in) plus one application.
+func setUpAndCreateApp(t *testing.T, client *http.Client, baseURL string) applicationResponse {
+	t.Helper()
+	doJSON(t, client, http.MethodPost, baseURL+"/api/v1/setup", setupRequest{
+		OrgName: "Acme", Email: "owner@example.com", Password: "supersecret123",
+	}).Body.Close()
+
+	appResp := doJSON(t, client, http.MethodPost, baseURL+"/api/v1/applications", createApplicationRequest{Name: "Document AI"})
+	var app applicationResponse
+	decodeJSON(t, appResp, &app)
+	return app
+}
+
+func TestApplicationSummary_ReflectsSeededRollups(t *testing.T) {
+	_, client, baseURL, pool := newTestEnv(t)
+	app := setUpAndCreateApp(t, client, baseURL)
+
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	_, err := pool.Exec(context.Background(), `
+		INSERT INTO application_daily (app_id, day, requests, errors, input_tokens, output_tokens, total_tokens, cost_micro, duration_ms_sum)
+		VALUES ($1, $2, 100, 5, 50000, 20000, 70000, 12000, 45000)
+	`, app.ID, today)
+	if err != nil {
+		t.Fatalf("unexpected error seeding application_daily: %v", err)
+	}
+
+	resp := doJSON(t, client, http.MethodGet, baseURL+"/api/v1/applications/"+app.ID+"/summary", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var summary summaryResponse
+	decodeJSON(t, resp, &summary)
+
+	if summary.Requests != 100 || summary.Errors != 5 || summary.CostMicro != 12000 {
+		t.Errorf("expected the summary to reflect seeded rollups, got %+v", summary)
+	}
+	if summary.AvgDurationMS != 450 {
+		t.Errorf("expected avg_duration_ms=450 (45000/100), got %v", summary.AvgDurationMS)
+	}
+}
+
+func TestApplicationSummary_UnknownApplicationIs404(t *testing.T) {
+	_, client, baseURL, _ := newTestEnv(t)
+	doJSON(t, client, http.MethodPost, baseURL+"/api/v1/setup", setupRequest{
+		OrgName: "Acme", Email: "owner@example.com", Password: "supersecret123",
+	}).Body.Close()
+
+	resp := doJSON(t, client, http.MethodGet, baseURL+"/api/v1/applications/00000000-0000-0000-0000-000000000000/summary", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for an unknown application, got %d", resp.StatusCode)
+	}
+}
+
+func TestApplicationTimeseries_ReturnsChronologicalPoints(t *testing.T) {
+	_, client, baseURL, pool := newTestEnv(t)
+	app := setUpAndCreateApp(t, client, baseURL)
+
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	yesterday := today.AddDate(0, 0, -1)
+	_, err := pool.Exec(context.Background(), `
+		INSERT INTO application_daily (app_id, day, requests, errors, input_tokens, output_tokens, total_tokens, cost_micro, duration_ms_sum)
+		VALUES ($1, $2, 10, 0, 1000, 500, 1500, 100, 2000), ($1, $3, 20, 1, 2000, 1000, 3000, 200, 4000)
+	`, app.ID, yesterday, today)
+	if err != nil {
+		t.Fatalf("unexpected error seeding application_daily: %v", err)
+	}
+
+	resp := doJSON(t, client, http.MethodGet, baseURL+"/api/v1/applications/"+app.ID+"/timeseries?range=7d", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var points []dailyPointResponse
+	decodeJSON(t, resp, &points)
+
+	if len(points) != 2 {
+		t.Fatalf("expected 2 daily points, got %d: %+v", len(points), points)
+	}
+	if points[0].Requests != 10 || points[1].Requests != 20 {
+		t.Errorf("expected points in chronological order, got %+v", points)
+	}
+}
+
+func TestApplicationModels_SortedByCostDescending(t *testing.T) {
+	_, client, baseURL, pool := newTestEnv(t)
+	app := setUpAndCreateApp(t, client, baseURL)
+
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	_, err := pool.Exec(context.Background(), `
+		INSERT INTO request_rollup_daily (org_id, app_id, day, provider, model, status, requests, input_tokens, output_tokens, total_tokens, cost_micro, duration_ms_sum)
+		VALUES
+			($1, $2, $3, 'openai', 'gpt-4o-mini', 'ok', 80, 8000, 4000, 12000, 40, 16000),
+			($1, $2, $3, 'openai', 'gpt-4o', 'ok', 20, 6000, 3000, 9000, 400, 6000)
+	`, "99999999-9999-9999-9999-999999999999", app.ID, today)
+	if err != nil {
+		t.Fatalf("unexpected error seeding request_rollup_daily: %v", err)
+	}
+
+	resp := doJSON(t, client, http.MethodGet, baseURL+"/api/v1/applications/"+app.ID+"/models", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var breakdown []modelBreakdownResponse
+	decodeJSON(t, resp, &breakdown)
+
+	if len(breakdown) != 2 {
+		t.Fatalf("expected 2 models, got %d: %+v", len(breakdown), breakdown)
+	}
+	if breakdown[0].Model != "gpt-4o" {
+		t.Errorf("expected gpt-4o (higher cost) first, got %+v", breakdown[0])
+	}
+	if breakdown[1].Model != "gpt-4o-mini" || breakdown[1].Requests != 80 {
+		t.Errorf("expected gpt-4o-mini second with 80 requests, got %+v", breakdown[1])
 	}
 }

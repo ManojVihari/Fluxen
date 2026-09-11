@@ -1,52 +1,23 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
-import Link from "next/link";
-import { api, ApiError, GATEWAY_BASE_URL, type Application, type ApiKey } from "@/lib/api";
+import { useState } from "react";
+import { useParams } from "next/navigation";
+import { api, ApiError, GATEWAY_BASE_URL, type ApiKey } from "@/lib/api";
 import { Button, CodeBlock, ErrorBanner } from "@/components/ui";
 
 // The connect screen: issue an API key, show it exactly once, and give the
 // user copy-paste snippets to point an OpenAI-compatible client at Fluxen
 // (Part L Phase 1: "connect screen shows the exact base_url + key + a
 // copy-paste snippet"). This is the screen the Aha-Moment journey (Part J)
-// depends on every earlier phase to reach.
+// depends on every earlier phase to reach. The application header and tab
+// nav are provided by the shared Application Detail layout.
 export default function ConnectPage() {
   const params = useParams<{ id: string }>();
-  const router = useRouter();
 
-  const [app, setApp] = useState<Application | null>(null);
-  const [notFound, setNotFound] = useState(false);
   const [key, setKey] = useState<ApiKey | null>(null);
   const [revoked, setRevoked] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [issuing, setIssuing] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .listApplications()
-      .then((apps) => {
-        if (cancelled) return;
-        const found = apps.find((a) => a.id === params.id) ?? null;
-        if (!found) {
-          setNotFound(true);
-          return;
-        }
-        setApp(found);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        if (err instanceof ApiError && err.status === 401) {
-          router.replace("/login");
-          return;
-        }
-        setError(err instanceof ApiError ? err.message : "Failed to load application.");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [params.id, router]);
 
   async function handleGenerateKey() {
     setError(null);
@@ -73,26 +44,8 @@ export default function ConnectPage() {
     }
   }
 
-  if (notFound) {
-    return (
-      <main className="mx-auto max-w-2xl p-8">
-        <ErrorBanner message="Application not found." />
-        <Link href="/applications" className="text-sm underline">
-          Back to applications
-        </Link>
-      </main>
-    );
-  }
-
   return (
-    <main className="mx-auto max-w-2xl p-8">
-      <Link href="/applications" className="text-sm text-slate-500 underline-offset-2 hover:underline">
-        ← Applications
-      </Link>
-
-      <h1 className="mb-1 mt-2 text-xl font-semibold text-slate-900">
-        {app ? `Connect ${app.name}` : "Connect application"}
-      </h1>
+    <div>
       <p className="mb-6 text-sm text-slate-500">
         Point your existing OpenAI-compatible client at Fluxen by changing its
         base URL and API key — nothing else about your application needs to
@@ -150,7 +103,7 @@ export default function ConnectPage() {
           </Button>
         </div>
       )}
-    </main>
+    </div>
   );
 }
 

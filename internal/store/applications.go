@@ -95,6 +95,26 @@ func (a *Applications) Get(ctx context.Context, orgID types.OrgID, id types.AppI
 	return app, nil
 }
 
+// GetBySlug fetches one application by its org-scoped slug — used by
+// tools/trafficgen to make `fluxenctl seed --demo` idempotent (reuse the
+// demo application if it already exists rather than erroring or
+// duplicating it).
+func (a *Applications) GetBySlug(ctx context.Context, orgID types.OrgID, slug string) (Application, error) {
+	var app Application
+	err := a.pool.QueryRow(ctx, `
+		SELECT id, org_id, slug, name, status, created_at, first_seen_at, last_seen_at
+		FROM applications
+		WHERE org_id = $1 AND slug = $2
+	`, orgID, slug).Scan(&app.ID, &app.OrgID, &app.Slug, &app.Name, &app.Status, &app.CreatedAt, &app.FirstSeenAt, &app.LastSeenAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return Application{}, ErrNotFound
+		}
+		return Application{}, fmt.Errorf("store: failed to get application by slug: %w", err)
+	}
+	return app, nil
+}
+
 // SlugExists reports whether an org already has an application with this
 // slug — used to disambiguate a newly-generated slug before insert.
 func (a *Applications) SlugExists(ctx context.Context, orgID types.OrgID, slug string) (bool, error) {

@@ -1,15 +1,17 @@
-// Command fluxenctl is the admin CLI (Part C.1). Phase 0 implements only
-// the migration subcommands, since Phase 0's database has nothing else to
-// administer yet — org/user creation, key issuance, and demo-traffic
-// seeding are added by the phases that introduce those entities.
+// Command fluxenctl is the admin CLI (Part C.1): migration management and
+// demo-data seeding.
 package main
 
 import (
+	"context"
 	"fmt"
+	"math/rand"
 	"os"
+	"time"
 
 	"fluxen/internal/config"
 	"fluxen/internal/store"
+	"fluxen/tools/trafficgen"
 )
 
 func main() {
@@ -27,6 +29,8 @@ func run(args []string) error {
 	switch args[0] {
 	case "migrate":
 		return runMigrate(args[1:])
+	case "seed":
+		return runSeed(args[1:])
 	case "-h", "--help", "help":
 		printUsage()
 		return nil
@@ -63,6 +67,53 @@ func runMigrate(args []string) error {
 	}
 }
 
+// runSeed implements `fluxenctl seed --demo` (Part L Phase 2: the exact
+// invocation the demo scenario and Phase 3's "fresh install" story both
+// depend on). It reuses an existing organization/application if one
+// already exists — safe to run more than once.
+func runSeed(args []string) error {
+	demo := false
+	for _, a := range args {
+		if a == "--demo" {
+			demo = true
+		}
+	}
+	if !demo {
+		return fmt.Errorf("usage: fluxenctl seed --demo")
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	pool, err := store.OpenPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	opts := trafficgen.DefaultOptions()
+	opts.Rand = rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	result, err := trafficgen.Seed(ctx, pool, opts)
+	if err != nil {
+		return err
+	}
+
+	if result.AlreadySeeded {
+		fmt.Printf("fluxenctl: %q already has traffic — nothing to do.\n", result.AppSlug)
+		return nil
+	}
+
+	fmt.Printf("fluxenctl: seeded %d requests for application %q (slug=%s).\n", result.RequestsGenerated, result.AppSlug, result.AppSlug)
+	fmt.Println("fluxenctl: open the dashboard and sign in as owner@example.com / supersecret123 (if this was a fresh install).")
+	return nil
+}
+
 func usageError() error {
 	printUsage()
 	return fmt.Errorf("invalid usage")
@@ -75,6 +126,8 @@ Usage:
   fluxenctl migrate up       Apply all pending database migrations
   fluxenctl migrate down     Roll back the most recent migration
   fluxenctl migrate status   Show applied/pending migration status
+  fluxenctl seed --demo      Seed a demo organization, application, and
+                             30 days of realistic synthetic traffic
 
 Requires DATABASE_URL to be set in the environment.`)
 }

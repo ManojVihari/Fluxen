@@ -85,3 +85,31 @@ export function CodeBlock({ children }: { children: string }) {
     </pre>
   );
 }
+
+export function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-1 text-2xl font-semibold text-slate-900">{value}</p>
+      {sub && <p className="mt-0.5 text-xs text-slate-400">{sub}</p>}
+    </div>
+  );
+}
+
+export function EmptyState({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-lg border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
+      {children}
+    </div>
+  );
+}
+
+export function Badge({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "warn" }) {
+  const tones: Record<string, string> = {
+    neutral: "bg-slate-100 text-slate-600",
+    warn: "bg-amber-100 text-amber-700",
+  };
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-xs ${tones[tone]}`}>{children}</span>
+  );
+}
