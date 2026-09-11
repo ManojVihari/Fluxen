@@ -3,9 +3,10 @@
 *.test
 *.out
 
-# Node / pnpm
-node_modules/
-.next/
+# Node / pnp
+/web/node_modules/
+
+**/.next/
 out/
 .turbo/
 

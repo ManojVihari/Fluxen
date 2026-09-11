@@ -88,7 +88,7 @@ func TestBoot_ReadyzReflectsPostgresAndRedis(t *testing.T) {
 		"postgres": pool,
 		"redis":    redisPinger{client: redisClient},
 	}
-	router := newRouter(deps, metrics)
+	router := newRouter(deps, metrics, nil, nil)
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -120,7 +120,7 @@ func TestBoot_ReadyzReflectsPostgresAndRedis(t *testing.T) {
 // dependency map (Part C.5 / cmd/fluxen main.go doc comment).
 func TestHealthz_AlwaysOKRegardlessOfDeps(t *testing.T) {
 	metrics := observability.NewMetrics()
-	router := newRouter(map[string]health.Pinger{}, metrics)
+	router := newRouter(map[string]health.Pinger{}, metrics, nil, nil)
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()

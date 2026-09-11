@@ -1,0 +1,31 @@
+# Fluxen pricing catalog. Human-editable, versioned by date string,
+# embedded into the binary (catalog.go). A request's pricing_version
+# column always records the version active when it was priced — updating
+# this file does not rewrite the cost of historical requests (Part H.2).
+#
+# Prices are in micro-USD per model, per million tokens
+# (1 USD = 1_000_000 micro-USD). Phase 1 only proxies OpenAI traffic, so
+# only OpenAI models are listed; Gemini and Ollama entries arrive in
+# Phase 7 alongside those providers.
+version: "2026-09-01"
+models:
+  - id: gpt-4o
+    provider: openai
+    input_per_mtok_micro: 2500000
+    output_per_mtok_micro: 10000000
+  - id: gpt-4o-2024-11-20
+    provider: openai
+    input_per_mtok_micro: 2500000
+    output_per_mtok_micro: 10000000
+  - id: gpt-4o-mini
+    provider: openai
+    input_per_mtok_micro: 150000
+    output_per_mtok_micro: 600000
+  - id: gpt-4-turbo
+    provider: openai
+    input_per_mtok_micro: 10000000
+    output_per_mtok_micro: 30000000
+  - id: gpt-3.5-turbo
+    provider: openai
+    input_per_mtok_micro: 500000
+    output_per_mtok_micro: 1500000

@@ -1,0 +1,87 @@
+// A handful of tiny shared primitives, not a design system — Phase 1's UI
+// is intentionally utilitarian (Part L: "minimal"). Full UI conventions
+// (Money/ValueBadge/etc.) arrive with the screens that need them.
+import type { ReactNode } from "react";
+
+export function Card({ children }: { children: ReactNode }) {
+  return (
+    <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+      {children}
+    </div>
+  );
+}
+
+export function PageTitle({ children }: { children: ReactNode }) {
+  return <h1 className="mb-1 text-xl font-semibold text-slate-900">{children}</h1>;
+}
+
+export function Subtitle({ children }: { children: ReactNode }) {
+  return <p className="mb-6 text-sm text-slate-500">{children}</p>;
+}
+
+export function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <label className="mb-4 block">
+      <span className="mb-1 block text-sm font-medium text-slate-700">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+export const inputClass =
+  "w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500";
+
+export function Button({
+  children,
+  type = "button",
+  onClick,
+  disabled,
+  variant = "primary",
+}: {
+  children: ReactNode;
+  type?: "button" | "submit";
+  onClick?: () => void;
+  disabled?: boolean;
+  variant?: "primary" | "secondary" | "danger";
+}) {
+  const base =
+    "inline-flex items-center justify-center rounded-md px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50";
+  const variants: Record<string, string> = {
+    primary: "bg-slate-900 text-white hover:bg-slate-700",
+    secondary: "border border-slate-300 text-slate-700 hover:bg-slate-50",
+    danger: "bg-red-600 text-white hover:bg-red-700",
+  };
+  return (
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+      className={`${base} ${variants[variant]}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+export function ErrorBanner({ message }: { message: string | null }) {
+  if (!message) return null;
+  return (
+    <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+      {message}
+    </div>
+  );
+}
+
+export function CodeBlock({ children }: { children: string }) {
+  return (
+    <pre className="overflow-x-auto rounded-md bg-slate-900 p-3 text-xs text-slate-100">
+      <code>{children}</code>
+    </pre>
+  );
+}

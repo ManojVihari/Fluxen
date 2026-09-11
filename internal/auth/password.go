@@ -1,10 +1,9 @@
-// Package auth provides the password-hashing and session-token primitives
-// the dashboard's setup/login flow will use starting in Phase 1
-// ("Authentication & Applications"). Phase 0 wires this scaffolding and
-// unit-tests it in isolation, but exposes no HTTP endpoint that calls it —
-// there is no setup/login flow, no user-facing auth behavior, and no
-// session store yet. See the implementation specification's Phase 0
-// backend tasks and "Explicit non-goals."
+// Package auth provides the password-hashing, session, and API-key
+// primitives the dashboard and gateway use to authenticate callers:
+// bcrypt password hashing and Redis-backed sessions for the dashboard
+// (login/setup), and fx_-prefixed API keys with an in-process/Postgres
+// resolver for the gateway (Part C.1/C.5 of the implementation
+// specification).
 package auth
 
 import "golang.org/x/crypto/bcrypt"

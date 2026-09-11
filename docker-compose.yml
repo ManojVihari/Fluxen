@@ -51,6 +51,17 @@ services:
       LOG_LEVEL: info
       DATABASE_URL: "postgres://fluxen:fluxen@postgres:5432/fluxen?sslmode=disable"
       REDIS_URL: "redis://redis:6379/0"
+      # The gateway's deployment-wide OpenAI credential (Phase 1 — see
+      # internal/config's OpenAIAPIKey doc comment for why this is an env
+      # var rather than a UI-managed credential in V1). Set it in your
+      # shell or a .env file next to this compose file before running
+      # `docker compose up`; the gateway boots fine without it and simply
+      # returns 503 no_provider_credential until it's set.
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      # Only useful for pointing the gateway at a mock server in local
+      # development/testing; leave unset for a real deployment.
+      FLUXEN_OPENAI_BASE_URL: "${FLUXEN_OPENAI_BASE_URL:-}"
+      FLUXEN_DASHBOARD_ORIGIN: "http://localhost:3000"
     ports:
       - "8080:8080"
     depends_on:

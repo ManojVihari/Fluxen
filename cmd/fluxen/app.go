@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 	"github.com/redis/go-redis/v9"
 
 	"fluxen/internal/config"
@@ -72,19 +70,21 @@ func (r redisPinger) Ping(ctx context.Context) error {
 	return r.client.Ping(ctx).Err()
 }
 
-// newRouter builds the Phase 0 HTTP surface: /healthz (liveness),
-// /readyz (readiness — checks deps), /metrics (Prometheus). No gateway
-// pipeline and no control API exist yet.
-func newRouter(deps map[string]health.Pinger, metrics *observability.Metrics) chi.Router {
-	r := chi.NewRouter()
-	r.Use(middleware.RequestID)
-	r.Use(middleware.Recoverer)
+// newRouter builds Fluxen's full HTTP surface. /healthz, /readyz, and
+// /metrics are the operational endpoints (Phase 0); /api/ and /v1/ are
+// mounted separately as apiHandler (internal/api's control-plane API) and
+// gatewayHandler (internal/gateway's OpenAI-compatible ingress) so this
+// function stays free of any gateway/api-specific logic — it only routes
+// by prefix. Either handler may be nil (tests that only exercise the
+// Phase 0 operational endpoints pass nil, nil).
+func newRouter(deps map[string]health.Pinger, metrics *observability.Metrics, apiHandler, gatewayHandler http.Handler) http.Handler {
+	mux := http.NewServeMux()
 
-	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	r.Get("/readyz", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		checkCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 
@@ -105,9 +105,16 @@ func newRouter(deps map[string]health.Pinger, metrics *observability.Metrics) ch
 		writeJSON(w, code, status)
 	})
 
-	r.Handle("/metrics", metrics.Handler())
+	mux.Handle("/metrics", metrics.Handler())
 
-	return r
+	if apiHandler != nil {
+		mux.Handle("/api/", apiHandler)
+	}
+	if gatewayHandler != nil {
+		mux.Handle("/v1/", gatewayHandler)
+	}
+
+	return mux
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {

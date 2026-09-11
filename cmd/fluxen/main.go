@@ -1,10 +1,11 @@
 // Command fluxen is the combined gateway + control binary and the default
 // deployment target (Part B.1/B.4 of the implementation specification).
 //
-// Phase 0 gives it exactly three responsibilities: load config, connect to
-// Postgres and Redis (applying pending migrations along the way), and serve
-// /healthz, /readyz, and /metrics. No gateway pipeline, no control API, and
-// no business logic exist yet — those are built starting in Phase 1.
+// Phase 1 wires the first real product surface on top of Phase 0's
+// foundation: the control API (setup, auth, applications, keys) and the
+// OpenAI-compatible gateway (Application → Fluxen Gateway → Provider →
+// Response). Everything else — policy/cache/routing, Gemini/Ollama,
+// detectors — arrives in later phases.
 package main
 
 import (
@@ -17,9 +18,17 @@ import (
 	"syscall"
 	"time"
 
+	"fluxen/internal/api"
+	"fluxen/internal/auth"
 	"fluxen/internal/config"
+	"fluxen/internal/gateway"
 	"fluxen/internal/health"
+	"fluxen/internal/ingest"
 	"fluxen/internal/observability"
+	"fluxen/internal/store"
+	"fluxen/pkg/pricing"
+	"fluxen/pkg/providers"
+	"fluxen/pkg/providers/openai"
 )
 
 func main() {
@@ -50,12 +59,58 @@ func run() error {
 	defer cleanup()
 	logger.Info("fluxen: postgres and redis ready")
 
+	if cfg.OpenAIAPIKey == "" {
+		logger.Warn("fluxen: OPENAI_API_KEY is not set — /v1/chat/completions will return 503 no_provider_credential until it is")
+	}
+
+	catalog, err := pricing.LoadEmbedded()
+	if err != nil {
+		return err
+	}
+
 	metrics := observability.NewMetrics()
+
+	// --- storage-backed dependencies ---
+	apps := store.NewApplications(pool)
+	keys := store.NewAPIKeys(pool)
+	orgs := store.NewOrganizations(pool)
+	users := store.NewUsers(pool)
+	requests := store.NewRequests(pool)
+
+	// --- gateway ---
+	keyResolver := auth.NewResolver(keys)
+	queue := ingest.NewQueue(ingest.DefaultQueueSize, metrics.UsageDropped)
+	writer := ingest.NewWriter(queue, requests, logger)
+
+	writerCtx, stopWriter := context.WithCancel(context.Background())
+	defer stopWriter() // idempotent; covers every early-return path below
+	writerDone := make(chan struct{})
+	go func() {
+		writer.Run(writerCtx)
+		close(writerDone)
+	}()
+
+	var provider providers.Provider = openai.NewClient(nil)
+	cred := providers.Credential{APIKey: cfg.OpenAIAPIKey, BaseURL: cfg.OpenAIBaseURL}
+	gatewaySrv := gateway.NewServer(keyResolver, provider, cred, catalog, queue, logger)
+
+	// --- control API ---
+	apiSrv := api.NewServer(api.Server{
+		Orgs:            orgs,
+		Users:           users,
+		Apps:            apps,
+		Keys:            keys,
+		Sessions:        auth.NewSessionStore(redisClient),
+		KeyResolver:     keyResolver,
+		DashboardOrigin: cfg.DashboardOrigin,
+		Logger:          logger,
+	})
+
 	deps := map[string]health.Pinger{
 		"postgres": pool,
 		"redis":    redisPinger{client: redisClient},
 	}
-	router := newRouter(deps, metrics)
+	router := newRouter(deps, metrics, apiSrv.Router(), gatewaySrv.Router())
 
 	srv := &http.Server{
 		Addr:    cfg.HTTPAddr,
@@ -82,6 +137,18 @@ func run() error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return err
 	}
+
+	// Drain in-flight requests before closing the queue (Part B: graceful
+	// shutdown flushes the ingest buffer) — srv.Shutdown above already
+	// waited for in-flight HTTP handlers to finish, so nothing is still
+	// enqueuing by this point.
+	stopWriter()
+	select {
+	case <-writerDone:
+	case <-time.After(5 * time.Second):
+		logger.Warn("fluxen: ingest writer did not finish flushing within the shutdown grace period")
+	}
+
 	logger.Info("fluxen: shutdown complete")
 	return nil
 }

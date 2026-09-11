@@ -11,17 +11,20 @@ import (
 // Metrics holds the Prometheus registry for a Fluxen process. It is
 // constructed once at boot and its Handler is mounted at /metrics.
 //
-// Phase 0 registers only a process-uptime gauge, per the specification's
-// Phase 0 scope ("process-uptime gauge is enough for now"). Gateway
-// latency, provider error rates, cache hit ratio, ingest buffer depth, and
-// job health are added by the phases that produce those signals.
+// Phase 0 registered only a process-uptime gauge. Phase 1 adds
+// fluxen_usage_dropped_total — the counter the hot-path contract (Part
+// B.2) requires: when the ingest queue is full, a usage record is dropped
+// rather than blocking a proxied request, and this counter is what makes
+// that tradeoff observable instead of silent.
 type Metrics struct {
 	registry *prometheus.Registry
+
+	UsageDropped prometheus.Counter
 }
 
 // NewMetrics creates a fresh Prometheus registry, registers the standard Go
-// process/runtime collectors plus a fluxen_uptime_seconds gauge, and
-// returns the handler for /metrics.
+// process/runtime collectors plus fluxen_uptime_seconds and
+// fluxen_usage_dropped_total, and returns the handler for /metrics.
 func NewMetrics() *Metrics {
 	reg := prometheus.NewRegistry()
 
@@ -34,9 +37,14 @@ func NewMetrics() *Metrics {
 		func() float64 { return time.Since(start).Seconds() },
 	)
 
-	reg.MustRegister(uptime)
+	usageDropped := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "fluxen_usage_dropped_total",
+		Help: "Usage records dropped because the ingest queue was full. Serving traffic always wins over recording it (Part B.2).",
+	})
 
-	return &Metrics{registry: reg}
+	reg.MustRegister(uptime, usageDropped)
+
+	return &Metrics{registry: reg, UsageDropped: usageDropped}
 }
 
 // Handler returns the HTTP handler to mount at /metrics.
