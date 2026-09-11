@@ -4,7 +4,7 @@
 *.out
 
 # Node / pnp
-/web/node_modules/
+node_modules/
 
 **/.next/
 out/
