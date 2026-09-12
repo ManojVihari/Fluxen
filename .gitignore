@@ -5,6 +5,7 @@
 
 # Node / pnp
 node_modules/
+*.tsbuildinfo
 
 **/.next/
 out/
