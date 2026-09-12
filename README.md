@@ -9,17 +9,18 @@ Fluxen is a self-hosted AI traffic gateway and optimization platform. See:
 
 ## Current status
 
-**Phase 0 — Foundation**, **Phase 1 — First AI Request**, **Phase 2 — First Understanding**, and **Phase 3 — ⭐ Aha Moment (Opportunity Discovery)** are implemented.
+**Phase 0 — Foundation**, **Phase 1 — First AI Request**, **Phase 2 — First Understanding**, **Phase 3 — ⭐ Aha Moment (Opportunity Discovery)**, and **Phase 4 — Prove It (Simulate)** are implemented.
 
 - Repository structure, local dev loop, Postgres + Redis connectivity with migrations, structured logging, health/readiness/metrics endpoints.
 - A control API (`/api/v1/...`) for first-run setup, login/logout, applications, and API keys.
 - An OpenAI-compatible gateway (`/v1/chat/completions`) that authenticates by API key, proxies to real OpenAI (streaming and non-streaming), and persists every request — attributed, priced, and token-counted — to Postgres.
 - An in-process background scheduler that rolls raw requests up into hourly/daily aggregates, and a control API surface (`summary`/`timeseries`/`models`) that reads them.
 - The **Model Cost detector**: finds requests served by an expensive model that a cheaper cataloged model could plausibly have handled, and turns that into a real, evidence-backed optimization opportunity — Fluxen's core "aha moment."
-- A dashboard: setup wizard, login, applications list (with 30-day spend/requests), an Application Detail view (Usage & Cost, Models, and Efficiency tabs), a connect screen that issues an API key once with copy-paste Python/Node/curl snippets, and an Optimizations list + detail screen showing real detector output.
-- `fluxenctl seed --demo` — seeds a demo organization, a `document-ai` application, ~30 days of realistic synthetic traffic (with a deliberately over-used premium model), and immediately runs the Model Cost detector against it, so a fresh install shows a real opportunity without waiting.
+- A **simulation engine**: replays real historical traffic through a model-mix or exact-caching scenario, using the exact same pricing function production uses, so a user can prove an opportunity's impact against their own history before anything changes.
+- A dashboard: setup wizard, login, applications list (with 30-day spend/requests), an Application Detail view (Usage & Cost, Models, and Efficiency tabs), a connect screen that issues an API key once with copy-paste Python/Node/curl snippets, and an Optimizations list + detail screen with a fully working Simulate section.
+- `fluxenctl seed --demo` — seeds a demo organization, a `document-ai` application, ~30 days of realistic synthetic traffic (with a deliberately over-used premium model), and immediately runs the Model Cost detector against it, so a fresh install shows a real opportunity — and a runnable simulation — without waiting.
 
-Not yet implemented (later phases, per the spec): the other three detectors (repeated request, token efficiency, traffic anomaly), efficiency score, Simulate/Apply/Measure, Overview page, Requests investigation screen, or Policies (Phases 4–7), and Gemini/Ollama/caching/rate limits/budgets/model routing (Phases 5, 7).
+Not yet implemented (later phases, per the spec): budget simulation, Apply/Measure, the other three detectors (repeated request, token efficiency, traffic anomaly), efficiency score, Overview page, Requests investigation screen, or Policies (Phases 5–7), and Gemini/Ollama/caching enforcement/rate limits/budgets/model routing (Phases 5, 7).
 
 ### What's new in Phase 2
 
@@ -49,6 +50,19 @@ Phase 3's goal — the highest-priority product milestone in the spec — is the
 | Optimizations screens (dashboard) | A minimal `/optimizations` list and a full `/optimizations/{id}` detail page — Why, Evidence (eligibility bar, exclusion breakdown, token percentiles, price ratio, confidence badge with tooltip, the fixed no-quality-claim caveat), and Impact sections, all rendered from real evidence. Simulate/Apply buttons are present but visibly disabled — a preview of Phase 4/5, not yet wired. |
 | Application Detail's Efficiency tab | No longer a disabled placeholder — shows the application's own open opportunities (at minimum a count), linking into the Optimizations detail page. The full efficiency score/ring is still Phase 7. |
 | `tools/trafficgen` + `fluxenctl seed --demo` | Tuned traffic volume so a fresh seed's trailing 14 days reliably clears the detector's floors, and now runs the Model Cost detector immediately after seeding — a fresh install shows a real opportunity without waiting for the next scheduled tick. |
+
+### What's new in Phase 4
+
+Phase 4's goal is: let the user prove an opportunity's impact using their own history, without touching production. This phase added:
+
+| Area | What it does |
+|---|---|
+| `pkg/types.CacheKey` | The exact-match cache key formula (Part G.3.2), computed and stored on every new request from this phase onward (`requests.cache_key`) — a prerequisite the specification assumed already existed; it didn't (Phase 1 never wired it in), so this phase adds it. Historical requests from before this change have no cache key and can never register a cache hit in a simulation — only new traffic does. |
+| `internal/sim` | The simulation engine (Part G.4): a bounded-memory chronological replay (2M-row cap, uniform sampling beyond that) plus two pure, unit-tested scenarios — **model mix** (reroute a share of one model's traffic to a cheaper candidate, recosting every request via the exact same `pkg/pricing.Calculate` the gateway uses) and **exact caching** (a true replay through a simulated TTL+size-capped LRU, not a formula estimate). Budget-impact is deferred to Phase 5 alongside the budget control it simulates. |
+| **Release-blocking self-check** | Replaying real historical requests through `pkg/pricing.Calculate` must reproduce their actually-recorded cost within 0.5% (Part G.4) — the credibility floor for the whole feature, run against real Postgres data in CI from this phase onward. There is no policy engine yet (Phase 5), so "replaying the currently applied policy" reduces to confirming pricing itself hasn't silently drifted; the check extends to real routing decisions once Phase 5 ships one. |
+| `db/migrations/00006` | The `simulations` table (Part E.1) — append-only, one row per run. |
+| `POST /api/v1/simulations`, `GET /api/v1/simulations/{id}`, `GET /api/v1/applications/{id}/simulations` | Runs synchronously (replay at V1 scale completes well within a request) and persists the result. `actual_cost_micro`/`replayed_requests` are measured straight from real rows; `simulated_cost_micro`/`delta_micro`/`projected_monthly_savings_micro` are `value_type: "estimated"` (Rule 17). |
+| Optimizations detail page's Simulate section | Now fully functional for model-cost opportunities: a traffic-weight slider pre-filled from the opportunity's own recommendation, a real "Run simulation" call, and a result view — current vs. simulated cost, delta, affected-request count, per-model breakdown, and the fixed ±15% token-count assumption. Apply stays visibly disabled (Phase 5). |
 
 ## Quickstart (Docker Compose)
 
@@ -87,7 +101,7 @@ The fastest way to see Application Detail with real-looking data, without connec
 docker compose exec fluxen fluxenctl seed --demo
 ```
 
-This creates an organization (owner: `owner@example.com` / `supersecret123`, only if no organization exists yet), an application named "Document AI", ~30 days of synthetic multi-model traffic, and runs the Model Cost detector against it — then sign in, open **Optimizations** (or the application's **Efficiency** tab), and you should see a real opportunity like *"N% of gpt-4o traffic looks suitable for gpt-4o-mini."* Safe to run more than once; it no-ops if the application already has traffic.
+This creates an organization (owner: `owner@example.com` / `supersecret123`, only if no organization exists yet), an application named "Document AI", ~30 days of synthetic multi-model traffic, and runs the Model Cost detector against it — then sign in, open **Optimizations** (or the application's **Efficiency** tab), open the opportunity, and click **Run simulation** to see the model-mix recommendation's impact against that same real traffic. Safe to run more than once; it no-ops if the application already has traffic.
 
 ### Connect a real application
 
@@ -141,6 +155,7 @@ What each package's tests actually prove, if you want to spot-check rather than 
 | `internal/api` | The complete setup→login→create-app→issue-key→revoke→logout journey; the range-scoped rollup endpoints return exactly the seeded numbers (this is also where a same-day date-boundary bug was caught before it ever reached a demo). |
 | `internal/worker` | Jobs run immediately at boot, then on their own interval; one job's failure never stops another job or the scheduler. |
 | `internal/detect` | The eligibility predicate, confidence tiering, and conservative-split math are each correct against hand-computed fixtures. **Release-blocking:** an "expensive-model" fixture produces exactly one opportunity with internally-consistent numbers; a "clean" fixture (already on the cheap model, or genuinely needing the premium one) produces **zero**. End to end against real Postgres: the full detect → open → reviewed lifecycle works, an application below the traffic/spend floor produces nothing, and re-running the detector against unchanged traffic never creates a duplicate. |
+| `internal/sim` | Model-mix recosting and the conservative-split affected-request count are exact against hand-computed fixtures; exact-caching correctly hits within a TTL, misses once it expires (including the spec's own "six days later" example), never hits across different keys or with no key at all, and respects a size-capped LRU. **Release-blocking:** replaying real Postgres-stored requests through `pkg/pricing.Calculate` reproduces their recorded cost exactly — the 0.5% self-check floor (Part G.4). |
 | `tools/trafficgen` | Generated traffic only uses cataloged (priced) models; the injected model-cost inefficiency is actually present in the output; generation is deterministic for a fixed seed; `Seed()` is idempotent end-to-end against real Postgres. |
 
 ### Manual, against the running stack
@@ -171,7 +186,16 @@ With `docker compose up --build` healthy (see Quickstart), a few things worth ch
    docker compose exec postgres psql -U fluxen -d fluxen -c "SELECT count(*), status FROM opportunities GROUP BY status;"
    ```
    Expect exactly one `model_cost` opportunity, with a caveat string, an exclusion breakdown, and `savings_pct`/`savings_micro` that clear Part G.2's floors — and the restart must not create a second row or reset a `reviewed` opportunity back to `open`.
-7. **Open the dashboard**, click **Optimizations** (or an application's **Efficiency** tab), and open the opportunity: Why/Evidence/Impact should match step 6's numbers, and Simulate/Apply should be visibly present but disabled.
+7. **Open the dashboard**, click **Optimizations** (or an application's **Efficiency** tab), and open the opportunity: Why/Evidence/Impact should match step 6's numbers.
+8. **Run the pre-filled simulation** and cross-check it against the opportunity's own numbers:
+   ```bash
+   curl -s -b cookies.txt -X POST http://localhost:8080/api/v1/simulations \
+     -H "Content-Type: application/json" \
+     -d "{\"app_id\":\"$APP_ID\",\"opportunity_id\":\"$OPPORTUNITY_ID\",\"scenario\":{\"type\":\"model_mix\",\"current_model\":\"gpt-4o\",\"candidate_model\":\"gpt-4o-mini\",\"traffic_weight\":0.5}}" \
+     | python3 -m json.tool
+   ```
+   `actual_cost_micro × 30 ÷ 14` must equal the opportunity's own `current_cost_micro` exactly (both are the same real requests, over the same window, priced through the same function) — if that ever drifts, something in `internal/sim`/`internal/detect` has diverged from Rule 9. In the dashboard, the same "Run simulation" button on the opportunity page should show matching numbers. Apply stays visibly disabled (Phase 5).
+9. **Confirm the release-blocking self-check still passes**: `go test ./internal/sim/... -run TestSelfCheck -v` — a failure here means replay no longer reproduces recorded reality and blocks the release (Part G.4/K).
 
 ## Local development (without Docker)
 
@@ -248,6 +272,9 @@ DELETE   /api/v1/keys/{id}
 GET      /api/v1/opportunities?status=&app_id=     detector output, newest-detected first
 GET      /api/v1/opportunities/{id}                one opportunity's full evidence/recommendation
 POST     /api/v1/opportunities/{id}/review         open -> reviewed
+POST     /api/v1/simulations                       run a model_mix or exact_caching scenario, synchronously
+GET      /api/v1/simulations/{id}                  one simulation's full result
+GET      /api/v1/applications/{id}/simulations     an application's simulation history, newest first
 ```
 
 `range` accepts `24h`, `7d`, `30d` (default), `90d`.
@@ -265,16 +292,17 @@ cmd/fluxen           combined gateway + control binary (the default deployment t
 cmd/fluxenctl        admin CLI (migrations, demo seeding)
 internal/config      env config, validated at boot
 internal/auth        password hashing, API keys, session store, key resolver
-internal/store       Postgres access: applications, api_keys, users, organizations, requests, rollups, opportunities
+internal/store       Postgres access: applications, api_keys, users, organizations, requests, rollups, opportunities, simulations
 internal/gateway     the OpenAI-compatible ingress: auth, pipeline, streaming
 internal/ingest      async bounded queue + batch writer from gateway to Postgres
 internal/rollup      idempotent hourly/daily aggregation of requests into the rollup tables
 internal/detect      the Model Cost detector, suppression/ranking rules, and the Postgres-touching Runner
+internal/sim         the simulation engine: replay, model-mix and exact-caching scenarios, the release-blocking self-check
 internal/worker      the in-process background job scheduler
 internal/api         the control-plane HTTP API the dashboard talks to
 internal/health      dependency health checks (/readyz)
 internal/observability  structured logging, Prometheus metrics
-pkg/types            provider-neutral request/response/usage types
+pkg/types            provider-neutral request/response/usage types, exact-match cache key
 pkg/providers/openai OpenAI adapter (translation, streaming, errors)
 pkg/pricing          embedded pricing catalog + cost calculation
 tools/trafficgen     synthetic multi-day, multi-model traffic generator (used by `fluxenctl seed`)
