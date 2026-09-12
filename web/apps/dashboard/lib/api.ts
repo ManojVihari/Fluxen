@@ -116,6 +116,10 @@ export const api = {
   },
   getOpportunity: (id: string) => get<Opportunity>(`/api/v1/opportunities/${id}`),
   reviewOpportunity: (id: string) => post<Opportunity>(`/api/v1/opportunities/${id}/review`),
+
+  createSimulation: (body: CreateSimulationRequest) => post<Simulation>("/api/v1/simulations", body),
+  getSimulation: (id: string) => get<Simulation>(`/api/v1/simulations/${id}`),
+  listApplicationSimulations: (appId: string) => get<Simulation[]>(`/api/v1/applications/${appId}/simulations`),
 };
 
 // Matches the ?range= values internal/api/timerange.go accepts.
@@ -228,6 +232,59 @@ export interface ModelCostRecommendation {
   current_model: string;
   candidate_model: string;
   recommended_traffic_weight: number;
+}
+
+// Simulation mirrors internal/api's simulationResponse (Part L Phase 4).
+// scenario is sent as one of the two typed request shapes below; the
+// response's `scenario` field passes through whatever was stored,
+// untyped, same convention as Opportunity.evidence/recommendation.
+export interface Simulation {
+  id: string;
+  app_id: string;
+  opportunity_id?: string;
+  scenario: unknown;
+  window_start: string;
+  window_end: string;
+  replayed_requests: number;
+  affected_requests: number;
+  sampled: boolean;
+  actual_cost_micro: number;
+  simulated_cost_micro: number;
+  delta_micro: number;
+  delta_pct: number;
+  projected_monthly_savings_micro: number;
+  value_type: string;
+  breakdown: unknown;
+  assumptions: string[];
+  engine_version: string;
+  created_at: string;
+}
+
+export interface ModelMixScenarioRequest {
+  type: "model_mix";
+  current_model: string;
+  candidate_model: string;
+  traffic_weight: number;
+}
+
+export interface CachingScenarioRequest {
+  type: "exact_caching";
+  ttl_seconds: number;
+  max_entries?: number;
+}
+
+export interface CreateSimulationRequest {
+  app_id: string;
+  opportunity_id?: string;
+  window_days?: number;
+  scenario: ModelMixScenarioRequest | CachingScenarioRequest;
+}
+
+export interface ModelMixBreakdownRow {
+  model: string;
+  requests: number;
+  actual_cost_micro: number;
+  simulated_cost_micro: number;
 }
 
 // The gateway itself (not the control API) — what applications actually

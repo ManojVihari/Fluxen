@@ -60,6 +60,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		temperature:    req.Temperature,
 		maxTokens:      req.MaxTokens,
 		workload:       types.ExtractWorkloadFeatures(req),
+		cacheKey:       types.CacheKey(app.AppID, "", req),
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.Timeout)

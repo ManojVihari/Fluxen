@@ -21,6 +21,7 @@ type recordBuilder struct {
 	temperature    *float64
 	maxTokens      *int
 	workload       types.WorkloadFeatures
+	cacheKey       []byte
 }
 
 // finalize builds the UsageRecord for one completed (or failed) request.
@@ -61,7 +62,12 @@ func (b *recordBuilder) finalize(catalog *pricing.Catalog, usage types.ResponseU
 		CostStatus:     costStatus,
 		PricingVersion: catalog.Version,
 
-		CacheStatus: "disabled", // no cache until Phase 5
+		// CacheKey is computed and stored for every request regardless of
+		// whether caching is enforced (Part G.3.2) — this is what lets
+		// Phase 4's exact-caching simulation, and Phase 7's Repeated
+		// Request detector, prove value before the feature itself exists.
+		CacheStatus: "disabled", // no cache enforcement until Phase 5
+		CacheKey:    b.cacheKey,
 
 		Status:       status,
 		HTTPStatus:   httpStatus,

@@ -19,6 +19,7 @@ import (
 
 	"fluxen/internal/auth"
 	"fluxen/internal/store"
+	"fluxen/pkg/pricing"
 )
 
 // newTestEnv stands up disposable Postgres + Redis containers, applies
@@ -88,13 +89,21 @@ func newTestEnv(t *testing.T) (*Server, *http.Client, string, *pgxpool.Pool) {
 
 	apps := store.NewApplications(pool)
 	keys := store.NewAPIKeys(pool)
+	catalog, err := pricing.LoadEmbedded()
+	if err != nil {
+		t.Fatalf("failed to load pricing catalog: %v", err)
+	}
 	srv := NewServer(Server{
-		Orgs:     store.NewOrganizations(pool),
-		Users:    store.NewUsers(pool),
-		Apps:     apps,
-		Keys:     keys,
-		Rollups:  store.NewRollups(pool),
-		Sessions: auth.NewSessionStore(redisClient),
+		Orgs:          store.NewOrganizations(pool),
+		Users:         store.NewUsers(pool),
+		Apps:          apps,
+		Keys:          keys,
+		Requests:      store.NewRequests(pool),
+		Rollups:       store.NewRollups(pool),
+		Opportunities: store.NewOpportunities(pool),
+		Simulations:   store.NewSimulations(pool),
+		Catalog:       catalog,
+		Sessions:      auth.NewSessionStore(redisClient),
 	})
 
 	ts := httptest.NewServer(srv.Router())

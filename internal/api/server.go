@@ -2,9 +2,10 @@
 // (Part C.1: "control-plane HTTP API (dashboard-facing)"). Phase 1 added
 // setup/auth/applications/keys; Phase 2 added the per-application
 // summary/timeseries/models rollup reads Application Detail needs; Phase
-// 3 adds read access to detector output (opportunities) — everything
-// else (overview, requests, simulate/apply/measure, ...) arrives in later
-// phases.
+// 3 added read access to detector output (opportunities); Phase 4 adds
+// simulations (replay a scenario against real history, read-only,
+// production untouched) — everything else (overview, requests,
+// apply/measure, ...) arrives in later phases.
 package api
 
 import (
@@ -16,6 +17,7 @@ import (
 
 	"fluxen/internal/auth"
 	"fluxen/internal/store"
+	"fluxen/pkg/pricing"
 )
 
 // Server holds the control-plane API's dependencies.
@@ -24,9 +26,16 @@ type Server struct {
 	Users         *store.Users
 	Apps          *store.Applications
 	Keys          *store.APIKeys
+	Requests      *store.Requests
 	Rollups       *store.Rollups
 	Opportunities *store.Opportunities
+	Simulations   *store.Simulations
 	Sessions      *auth.SessionStore
+
+	// Catalog prices simulation scenarios via the exact same
+	// pkg/pricing.Calculate function the gateway uses (Rule 9) — never a
+	// simulation-only reimplementation.
+	Catalog *pricing.Catalog
 
 	// KeyResolver is the gateway's own resolver. In Phase 1's combined
 	// binary (cmd/fluxen) the API and gateway share one process, so a key
@@ -82,6 +91,10 @@ func (s *Server) Router() chi.Router {
 			r.Get("/opportunities", s.handleListOpportunities)
 			r.Get("/opportunities/{opportunityID}", s.handleGetOpportunity)
 			r.Post("/opportunities/{opportunityID}/review", s.handleReviewOpportunity)
+
+			r.Post("/simulations", s.handleCreateSimulation)
+			r.Get("/simulations/{simulationID}", s.handleGetSimulation)
+			r.Get("/applications/{appID}/simulations", s.handleListApplicationSimulations)
 		})
 	})
 

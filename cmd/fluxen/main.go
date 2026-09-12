@@ -83,6 +83,7 @@ func run() error {
 	requests := store.NewRequests(pool)
 	rollups := store.NewRollups(pool)
 	opportunities := store.NewOpportunities(pool)
+	simulations := store.NewSimulations(pool)
 
 	// --- gateway ---
 	keyResolver := auth.NewResolver(keys)
@@ -107,8 +108,11 @@ func run() error {
 		Users:           users,
 		Apps:            apps,
 		Keys:            keys,
+		Requests:        requests,
 		Rollups:         rollups,
 		Opportunities:   opportunities,
+		Simulations:     simulations,
+		Catalog:         catalog,
 		Sessions:        auth.NewSessionStore(redisClient),
 		KeyResolver:     keyResolver,
 		DashboardOrigin: cfg.DashboardOrigin,

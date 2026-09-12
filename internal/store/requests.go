@@ -136,6 +136,61 @@ func (r *Requests) ModelCostFacts(ctx context.Context, appID types.AppID, since,
 	return facts, nil
 }
 
+// ReplayFact is the per-request shape Phase 4's simulation engine
+// (internal/sim) replays — a superset of ModelCostFact adding the fields
+// a chronological replay needs (StartedAt for ordering, ID for
+// idempotent iteration, CacheKey for the exact-caching scenario).
+type ReplayFact struct {
+	ID             string
+	StartedAt      time.Time
+	RequestedModel string
+	Provider       string
+	Model          string
+	InputTokens    int
+	OutputTokens   int
+	CostMicro      int64
+	CostStatus     types.CostStatus
+	Status         string
+	CacheKey       []byte
+}
+
+// ReplayFacts returns every request for an application in [since, until),
+// ordered chronologically — the raw material internal/sim replays.
+// Unlike ModelCostFacts this includes every status (a simulation reports
+// on "requests," not just successfully-served ones) and every
+// cost_status (Cost recomputation for an unknown-cost request still
+// yields CostUnknown, same as production — Part D.2 applies to
+// simulation too).
+func (r *Requests) ReplayFacts(ctx context.Context, appID types.AppID, since, until time.Time) ([]ReplayFact, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, started_at, requested_model, provider, model, input_tokens, output_tokens,
+		       cost_micro, cost_status, status, cache_key
+		FROM requests
+		WHERE app_id = $1 AND started_at >= $2 AND started_at < $3
+		ORDER BY started_at, id
+	`, appID, since, until)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to load replay facts: %w", err)
+	}
+	defer rows.Close()
+
+	var facts []ReplayFact
+	for rows.Next() {
+		var f ReplayFact
+		var costStatus string
+		if err := rows.Scan(&f.ID, &f.StartedAt, &f.RequestedModel, &f.Provider, &f.Model, &f.InputTokens, &f.OutputTokens,
+			&f.CostMicro, &costStatus, &f.Status, &f.CacheKey); err != nil {
+			return nil, fmt.Errorf("store: failed to scan replay fact: %w", err)
+		}
+		f.CostStatus = types.CostStatus(costStatus)
+		facts = append(facts, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: failed to load replay facts: %w", err)
+	}
+	return facts, nil
+}
+
 func nullableString(s string) any {
 	if s == "" {
 		return nil
