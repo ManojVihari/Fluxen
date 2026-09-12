@@ -9,7 +9,7 @@ Fluxen is a self-hosted AI traffic gateway and optimization platform. See:
 
 ## Current status
 
-**Phase 0 — Foundation**, **Phase 1 — First AI Request**, **Phase 2 — First Understanding**, **Phase 3 — ⭐ Aha Moment (Opportunity Discovery)**, **Phase 4 — Prove It (Simulate)**, and **Phase 5 — Control It (Apply)** are implemented.
+**Phase 0 — Foundation**, **Phase 1 — First AI Request**, **Phase 2 — First Understanding**, **Phase 3 — ⭐ Aha Moment (Opportunity Discovery)**, **Phase 4 — Prove It (Simulate)**, **Phase 5 — Control It (Apply)**, and **Phase 6 — Measure It** are implemented.
 
 - Repository structure, local dev loop, Postgres + Redis connectivity with migrations, structured logging, health/readiness/metrics endpoints.
 - A control API (`/api/v1/...`) for first-run setup, login/logout, applications, and API keys.
@@ -18,10 +18,12 @@ Fluxen is a self-hosted AI traffic gateway and optimization platform. See:
 - The **Model Cost detector**: finds requests served by an expensive model that a cheaper cataloged model could plausibly have handled, and turns that into a real, evidence-backed optimization opportunity — Fluxen's core "aha moment."
 - A **simulation engine**: replays real historical traffic through a model-mix, exact-caching, or budget-impact scenario, using the exact same pricing function production uses, so a user can prove an opportunity's impact against their own history before anything changes.
 - A real **control surface**: model routing, exact caching, budget, rate limiting, and model restriction — all five now actually enforced on the live gateway, versioned and diffed in policy history, and applicable straight from a proven recommendation.
-- A dashboard: setup wizard, login, applications list, an Application Detail view (Usage & Cost, Models, Efficiency, and now **Policies** tabs), a connect screen, and an Optimizations list + detail screen where Simulate and Apply are both fully wired end to end.
+- **Measurement**: every applied change gets a real before/after verdict — a frozen pre-apply baseline, an interim (+7d) and final (+14d) check comparing cost per 1,000 requests, a five-way honest verdict, and a one-click Revert on a regression that restores the exact prior policy.
+- A dashboard: setup wizard, login, applications list, an Application Detail view (Usage & Cost, Models, Efficiency, and **Policies** tabs), a connect screen, and an Optimizations list + detail screen where Simulate, Apply, and now **Measure** are all fully wired end to end.
 - `fluxenctl seed --demo` — seeds a demo organization, a `document-ai` application, ~30 days of realistic synthetic traffic, and immediately runs the Model Cost detector against it, so a fresh install shows a real opportunity — and a runnable simulation — without waiting.
+- `fluxenctl measure check --fast-forward=<duration>` — runs interim/final measurement checks as if that much time had passed since apply, so a demo or test doesn't need to wait two real weeks.
 
-Not yet implemented (later phases, per the spec): Measure (baseline freeze/verdict/revert), the other three detectors (repeated request, token efficiency, traffic anomaly), efficiency score, Overview page, Requests investigation screen (Phases 6–7), and Gemini/Ollama (Phase 7).
+Not yet implemented (later phases, per the spec): the other three detectors (repeated request, token efficiency, traffic anomaly), efficiency score, Overview page, Requests investigation screen (Phase 7), and Gemini/Ollama (Phase 7).
 
 ### What's new in Phase 2
 
@@ -80,6 +82,19 @@ Phase 5's goal is: let the user safely act on the Aha Moment's recommendation, a
 | `db/migrations/00007` | `policies` (current document per app) and `policy_history` (every mutation, append-only, linked to the opportunity/simulation that caused it when applicable). |
 | `POST /opportunities/{id}/apply`, `GET/PUT .../policy`, `GET .../policy/history`, `POST .../policy/revert` | The real Apply transaction and the direct policy editor's CRUD, both funneling through the same versioned save path. |
 | Policies tab + Apply confirmation dialog (dashboard) | The Policies tab is no longer a placeholder — a real five-control editor with a diff-before-save and history. The Optimizations detail page's Apply button now opens a real confirm dialog requiring the application's slug to be retyped (Rule 19: friction on purpose for an irreversible-feeling change) before calling the real endpoint. |
+
+### What's new in Phase 6
+
+Phase 6's goal is: close the loop between what Fluxen estimated and what actually happened. This phase added:
+
+| Area | What it does |
+|---|---|
+| `internal/measure` | Cost-per-1,000-requests comparison and Part G.5's exact five-way verdict (`successful`/`partial`/`no_effect`/`regressed`/`inconclusive`) — pure, unit-tested math — plus a `Runner` that finds every measurement awaiting its interim (+7d) or final (+14d) check, computes the real observed window from actual requests, detects a confounding second policy change via `policy_history`, and persists the verdict. |
+| `internal/policy`'s `Applier`/`Reverter` | Apply now freezes a real 14-day pre-apply baseline (`baseline_cost_per_1k_micro`, computed once and never recomputed — Rule 10) via a small injected interface (`BaselineFreezer`) that avoids a package import cycle. A `regressed` verdict's one-click Revert restores the exact prior policy document as a new version and marks both the opportunity and the measurement `reverted`. |
+| `db/migrations/00008` | `measurements` — one row per apply, baseline frozen at creation, observed/verdict fields filled in as checks complete. |
+| `GET /measurements`, `GET /measurements/{id}`, `GET /opportunities/{id}/measurement`, `POST /measurements/{id}/revert` | The measurement read surface and the Revert action. `actual_savings_micro`/`actual_pct` are `null` until `status` is `final` — Part G.6's fourth value type, "realized," only exists once a verdict is actually in. |
+| `fluxenctl measure check --fast-forward=<duration>` | Runs interim/final checks as of "now + duration" instead of real wall time — the demo/testing affordance the spec calls for so nobody has to wait two real weeks to see a verdict. |
+| Measure section (dashboard) | Appears on the Optimizations detail page once an opportunity has been applied: collecting/interim/final states, the baseline-vs-observed comparison, a plain-language verdict explanation, and — only on `regressed` — a Revert confirmation dialog. |
 
 ## Quickstart (Docker Compose)
 
@@ -179,6 +194,7 @@ What each package's tests actually prove, if you want to spot-check rather than 
 | `internal/policy` | Save is version-checked (a stale `expected_version` is rejected, never silently overwritten); history records every mutation in order; `Diff` reports only the fields that actually changed. **`Applier`**: the full apply transaction end to end (policy saved, opportunity transitioned to `applied`, history linked to both the opportunity and the simulation) and rejects applying without a matching simulation. |
 | `internal/gateway` (Phase 5 additions) | Against real Postgres + Redis: model restriction returns 403 for a disallowed model and 200 for an allowed one; rate limiting returns 429 exactly once the configured limit is exceeded; budget returns 403 once the limit is reached; **a live routing split converges to its configured weight over 300 real requests through the full HTTP pipeline**; a second identical cached request hits and the fake provider is called exactly once; an application with no policy at all behaves exactly like Phase 1. |
 | `tools/trafficgen` | Generated traffic only uses cataloged (priced) models; the injected model-cost inefficiency is actually present in the output; generation is deterministic for a fixed seed; `Seed()` is idempotent end-to-end against real Postgres. |
+| `internal/measure` | Every one of Part G.5's five verdicts against hand-computed fixtures, including the precedence resolution for bands that can overlap (a regression is never reclassified as "successful" just because the original estimate was tiny) and the low-volume/confound inconclusive gates. **End to end against real Postgres:** apply → seed cheaper post-apply traffic → fast-forward through interim and final → a `successful` verdict whose numbers match hand computation; a separate deliberately-regressed scenario → Revert → the policy document exactly matches pre-apply state; a second policy change landing mid-window → `inconclusive`. |
 
 ### Manual, against the running stack
 
@@ -228,6 +244,24 @@ With `docker compose up --build` healthy (see Quickstart), a few things worth ch
     Then send one real request for the `from_model` (see "Connect a real application") and confirm the JSON response's own `"model"` field comes back as the `to_model` — the policy is genuinely rerouting live traffic, not just recording an intent. `docker compose exec postgres psql ... "SELECT route_reason, route_variant, policy_version FROM requests ORDER BY started_at DESC LIMIT 1;"` should show `split`, `B`, and the new version number. The opportunity's own status should now read `applied`.
 11. **Check the Policies tab and history.** Open the application's **Policies** tab in the dashboard — it should show the routing control now enabled with the applied weight, and the history section underneath should list the apply as one entry sourced from `opportunity`, linked to both the opportunity and the simulation. Try editing a different control (e.g. enabling the rate limit) directly in the editor and saving — it should appear as a separate `user`-sourced history entry, and the routing control from the apply should be untouched.
 12. **Restart the stack** once more and confirm the applied policy is still enforced (a container restart must not lose or need to re-derive it — `internal/policy.Snapshot` reloads from Postgres on its next read).
+13. **Confirm the baseline froze at apply time:**
+    ```bash
+    curl -s -b cookies.txt "http://localhost:8080/api/v1/opportunities/$OPPORTUNITY_ID/measurement" | python3 -m json.tool
+    ```
+    `status` should be `collecting`, with `baseline_requests`/`baseline_cost_per_1k_micro` already populated and `observed_*`/`verdict` still absent. `baseline_cost_per_1k_micro` should equal (by hand) `sum(cost_micro)/count(*) * 1000` over `requests` in `[baseline_start, baseline_end)` for this app — verifiable directly against the `requests` table.
+14. **Fast-forward through both checks and see a real verdict**, without waiting two weeks:
+    ```bash
+    docker compose exec fluxen fluxenctl measure check --fast-forward=14d
+    curl -s -b cookies.txt "http://localhost:8080/api/v1/opportunities/$OPPORTUNITY_ID/measurement" | python3 -m json.tool
+    ```
+    `status` should now be `final` with a `verdict`. If no real traffic landed in the observed window (`[applied_at, applied_at+14d)` — note this is real wall-clock time, fast-forwarding only moves the *check*, not traffic), expect `inconclusive` with the low-volume reason, which is itself the correct, honest behavior (Part G.5) — send enough real requests for the `from_model` (see step 10) to clear 30% of `baseline_requests`, then re-run the check, to see a `successful` verdict instead. In the dashboard, the opportunity page's **Measure** section should show the same numbers.
+15. **Deliberately trigger and revert a regression.** With a `final` measurement in hand (of any verdict — the endpoint itself doesn't require `regressed`, though the dashboard button only appears then), confirm the current policy first, then:
+    ```bash
+    curl -s -b cookies.txt "http://localhost:8080/api/v1/applications/$APP_ID/policy" | python3 -m json.tool
+    curl -s -b cookies.txt -X POST "http://localhost:8080/api/v1/measurements/$MEASUREMENT_ID/revert" \
+      -H "Content-Type: application/json" -d '{"confirm":true,"note":"testing revert"}' | python3 -m json.tool
+    ```
+    The returned document must exactly match what the policy was *before* the apply (empty, if this was the application's first-ever policy change) — check `policy_history` to confirm it landed as a brand-new version with `change_source="revert"`, never overwriting the earlier entries. The opportunity and the measurement should both now read `status: "reverted"`.
 
 ## Local development (without Docker)
 
@@ -312,6 +346,10 @@ GET      /api/v1/applications/{id}/policy          current policy document + ver
 PUT      /api/v1/applications/{id}/policy          save a new version (optimistic-concurrency checked)
 GET      /api/v1/applications/{id}/policy/history  every mutation, newest first
 POST     /api/v1/applications/{id}/policy/revert   restore a prior version as a brand-new one
+GET      /api/v1/measurements?app_id=              an application's measurement history, newest first
+GET      /api/v1/measurements/{id}                 one measurement's full baseline/observed/verdict
+GET      /api/v1/opportunities/{id}/measurement    the live measurement for one opportunity, if any
+POST     /api/v1/measurements/{id}/revert          undo a regression: restore the exact pre-apply policy
 ```
 
 `range` accepts `24h`, `7d`, `30d` (default), `90d`.
@@ -331,13 +369,14 @@ cmd/fluxen           combined gateway + control binary (the default deployment t
 cmd/fluxenctl        admin CLI (migrations, demo seeding)
 internal/config      env config, validated at boot
 internal/auth        password hashing, API keys, session store, key resolver
-internal/store       Postgres access: applications, api_keys, users, organizations, requests, rollups, opportunities, simulations
+internal/store       Postgres access: applications, api_keys, users, organizations, requests, rollups, opportunities, simulations, measurements
 internal/gateway     the OpenAI-compatible ingress: auth, policy, routing, cache, guard, pipeline, streaming
 internal/ingest      async bounded queue + batch writer from gateway to Postgres
 internal/rollup      idempotent hourly/daily aggregation of requests into the rollup tables
 internal/detect      the Model Cost detector, suppression/ranking rules, and the Postgres-touching Runner
 internal/sim         the simulation engine: replay, model-mix/exact-caching/budget scenarios, the release-blocking self-check
-internal/policy      the policy store, versioned history, in-process snapshot cache, and the Apply transaction
+internal/policy      the policy store, versioned history, in-process snapshot cache, and the Apply/Revert transactions
+internal/measure     baseline freeze, cost-per-1k comparison, the five-way verdict, and the interim/final check Runner
 internal/guard       live rate-limit and budget enforcement (Redis-backed, fail-open)
 internal/cache       live exact-match response caching (Redis-backed, SSE replay for streamed hits)
 internal/worker      the in-process background job scheduler
