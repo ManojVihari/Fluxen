@@ -9,16 +9,17 @@ Fluxen is a self-hosted AI traffic gateway and optimization platform. See:
 
 ## Current status
 
-**Phase 0 — Foundation**, **Phase 1 — First AI Request**, and **Phase 2 — First Understanding** are implemented.
+**Phase 0 — Foundation**, **Phase 1 — First AI Request**, **Phase 2 — First Understanding**, and **Phase 3 — ⭐ Aha Moment (Opportunity Discovery)** are implemented.
 
 - Repository structure, local dev loop, Postgres + Redis connectivity with migrations, structured logging, health/readiness/metrics endpoints.
 - A control API (`/api/v1/...`) for first-run setup, login/logout, applications, and API keys.
 - An OpenAI-compatible gateway (`/v1/chat/completions`) that authenticates by API key, proxies to real OpenAI (streaming and non-streaming), and persists every request — attributed, priced, and token-counted — to Postgres.
 - An in-process background scheduler that rolls raw requests up into hourly/daily aggregates, and a control API surface (`summary`/`timeseries`/`models`) that reads them.
-- A dashboard: setup wizard, login, applications list (with 30-day spend/requests), an Application Detail view (Usage & Cost and Models tabs), and a connect screen that issues an API key once with copy-paste Python/Node/curl snippets.
-- `fluxenctl seed --demo` — seeds a demo organization, a `document-ai` application, and ~30 days of realistic synthetic traffic (with a deliberately over-used premium model) so the product can be explored without waiting for real traffic.
+- The **Model Cost detector**: finds requests served by an expensive model that a cheaper cataloged model could plausibly have handled, and turns that into a real, evidence-backed optimization opportunity — Fluxen's core "aha moment."
+- A dashboard: setup wizard, login, applications list (with 30-day spend/requests), an Application Detail view (Usage & Cost, Models, and Efficiency tabs), a connect screen that issues an API key once with copy-paste Python/Node/curl snippets, and an Optimizations list + detail screen showing real detector output.
+- `fluxenctl seed --demo` — seeds a demo organization, a `document-ai` application, ~30 days of realistic synthetic traffic (with a deliberately over-used premium model), and immediately runs the Model Cost detector against it, so a fresh install shows a real opportunity without waiting.
 
-Not yet implemented (later phases, per the spec): any optimization opportunity/detector, efficiency score, Overview page, Requests investigation screen, or Policies (Phases 3–6), and Gemini/Ollama/caching/rate limits/budgets/model routing (Phases 5, 7).
+Not yet implemented (later phases, per the spec): the other three detectors (repeated request, token efficiency, traffic anomaly), efficiency score, Simulate/Apply/Measure, Overview page, Requests investigation screen, or Policies (Phases 4–7), and Gemini/Ollama/caching/rate limits/budgets/model routing (Phases 5, 7).
 
 ### What's new in Phase 2
 
@@ -33,6 +34,21 @@ Phase 2's goal is: Fluxen can understand an application's AI traffic well enough
 | Application Detail (dashboard) | A new screen at `/applications/{id}` with a shared header + tab nav. **Usage & Cost** tab: spend, requests, tokens, error rate, and average latency stat tiles, plus a daily-spend bar chart. **Models** tab: a table of every (provider, model) pair the application used, sorted by cost, with per-model requests/tokens/errors/latency/spend/share. Efficiency, Opportunities, Policies, and Requests tabs are visible but disabled — placeholders for later phases. |
 | Applications list (dashboard) | Now shows 30-day spend and request count per application, not just name/status. |
 | `tools/trafficgen` + `fluxenctl seed --demo` | Generates ~30 days of realistic synthetic traffic for a demo `document-ai` application, split across two real (catalog-priced) models with a **deliberately over-used premium model** — most of that traffic has a token profile a cheaper model could plausibly have handled, which is exactly the inefficiency Phase 3's Model Cost detector will be built to find. Idempotent — safe to run more than once; reuses an existing organization/application if one already exists. |
+
+### What's new in Phase 3
+
+Phase 3's goal — the highest-priority product milestone in the spec — is the Aha Moment: Fluxen looks at an application's own real traffic and finds a credible, explainable optimization. This phase added:
+
+| Area | What it does |
+|---|---|
+| `pkg/pricing` catalog fields | Every catalog entry now also declares `context_window`, `max_output`, `capabilities`, `tier`, and `downgrade_candidates_for` — the *only* source of candidate models a detector may propose (never invented at detection time). |
+| `internal/detect` | The `Detector` shape, Part G.2's suppression/ranking rules (minimum traffic/spend, minimum savings, ranked by savings × confidence, capped at 5 open opportunities per app), and the **Model Cost detector** itself: eligibility predicate, per-request recosting against the real candidate price, exclusion-reason breakdown, confidence tiering, and the conservative `min(eligible_fraction, 0.5)` recommendation split. Pure and unit-testable — no database in the detection logic itself. |
+| `internal/detect.Runner` | The only piece that touches Postgres: walks every application, applies the app-level floor, fetches facts, runs the detector, and upserts survivors — re-running against unchanged traffic updates the existing opportunity instead of duplicating it, and never resets a user's review. Runs as a new scheduled job, `detect.model_cost`, every 15 minutes. |
+| `db/migrations/00005` | The `opportunities` table (Part E.1) — the product's primary noun — with a partial unique index so a detector re-run can never create a duplicate "live" opportunity. |
+| `GET .../opportunities`, `GET .../opportunities/{id}`, `POST .../opportunities/{id}/review` | Three new control-API endpoints. Evidence and recommendation are served as real detector JSON, not a fixed schema — every monetary figure carries `value_type: "projected"` (Rule 17: never present an estimate as measured). |
+| Optimizations screens (dashboard) | A minimal `/optimizations` list and a full `/optimizations/{id}` detail page — Why, Evidence (eligibility bar, exclusion breakdown, token percentiles, price ratio, confidence badge with tooltip, the fixed no-quality-claim caveat), and Impact sections, all rendered from real evidence. Simulate/Apply buttons are present but visibly disabled — a preview of Phase 4/5, not yet wired. |
+| Application Detail's Efficiency tab | No longer a disabled placeholder — shows the application's own open opportunities (at minimum a count), linking into the Optimizations detail page. The full efficiency score/ring is still Phase 7. |
+| `tools/trafficgen` + `fluxenctl seed --demo` | Tuned traffic volume so a fresh seed's trailing 14 days reliably clears the detector's floors, and now runs the Model Cost detector immediately after seeding — a fresh install shows a real opportunity without waiting for the next scheduled tick. |
 
 ## Quickstart (Docker Compose)
 
@@ -71,7 +87,7 @@ The fastest way to see Application Detail with real-looking data, without connec
 docker compose exec fluxen fluxenctl seed --demo
 ```
 
-This creates an organization (owner: `owner@example.com` / `supersecret123`, only if no organization exists yet), an application named "Document AI", and ~30 days of synthetic multi-model traffic — then sign in and open it from **Applications**. Safe to run more than once; it no-ops if the application already has traffic.
+This creates an organization (owner: `owner@example.com` / `supersecret123`, only if no organization exists yet), an application named "Document AI", ~30 days of synthetic multi-model traffic, and runs the Model Cost detector against it — then sign in, open **Optimizations** (or the application's **Efficiency** tab), and you should see a real opportunity like *"N% of gpt-4o traffic looks suitable for gpt-4o-mini."* Safe to run more than once; it no-ops if the application already has traffic.
 
 ### Connect a real application
 
@@ -124,6 +140,7 @@ What each package's tests actually prove, if you want to spot-check rather than 
 | `internal/store` | Every query is scoped correctly (an org can never read another org's data); rollup read-queries (`Summary`/`Timeseries`/`ModelBreakdown`) return correct sums and sort order. |
 | `internal/api` | The complete setup→login→create-app→issue-key→revoke→logout journey; the range-scoped rollup endpoints return exactly the seeded numbers (this is also where a same-day date-boundary bug was caught before it ever reached a demo). |
 | `internal/worker` | Jobs run immediately at boot, then on their own interval; one job's failure never stops another job or the scheduler. |
+| `internal/detect` | The eligibility predicate, confidence tiering, and conservative-split math are each correct against hand-computed fixtures. **Release-blocking:** an "expensive-model" fixture produces exactly one opportunity with internally-consistent numbers; a "clean" fixture (already on the cheap model, or genuinely needing the premium one) produces **zero**. End to end against real Postgres: the full detect → open → reviewed lifecycle works, an application below the traffic/spend floor produces nothing, and re-running the detector against unchanged traffic never creates a duplicate. |
 | `tools/trafficgen` | Generated traffic only uses cataloged (priced) models; the injected model-cost inefficiency is actually present in the output; generation is deterministic for a fixed seed; `Seed()` is idempotent end-to-end against real Postgres. |
 
 ### Manual, against the running stack
@@ -147,6 +164,14 @@ With `docker compose up --build` healthy (see Quickstart), a few things worth ch
 3. **Open the dashboard** at `http://localhost:3000`, sign in (`owner@example.com` / `supersecret123` if you used `--demo` on a fresh install), and open the seeded application: the Usage & Cost tab's stat tiles and bar chart, and the Models tab's table, should match what you saw via curl in step 2.
 4. **Send one real request** (see "Connect a real application" above) and confirm it shows up in `GET .../summary` within a few minutes (rollup.hourly ticks every 5 minutes; it also runs once immediately at process boot).
 5. **Restart the stack** (`docker compose restart fluxen` or a full `down`/`up`) and confirm migrations report "no migrations to run" and the seeded data is still there (volumes persist unless you pass `-v` to `down`).
+6. **Confirm the opportunity itself, and that re-detection doesn't duplicate it:**
+   ```bash
+   curl -s -b cookies.txt "http://localhost:8080/api/v1/opportunities" | python3 -m json.tool
+   docker compose restart fluxen   # detect.model_cost also runs once immediately at boot
+   docker compose exec postgres psql -U fluxen -d fluxen -c "SELECT count(*), status FROM opportunities GROUP BY status;"
+   ```
+   Expect exactly one `model_cost` opportunity, with a caveat string, an exclusion breakdown, and `savings_pct`/`savings_micro` that clear Part G.2's floors — and the restart must not create a second row or reset a `reviewed` opportunity back to `open`.
+7. **Open the dashboard**, click **Optimizations** (or an application's **Efficiency** tab), and open the opportunity: Why/Evidence/Impact should match step 6's numbers, and Simulate/Apply should be visibly present but disabled.
 
 ## Local development (without Docker)
 
@@ -220,6 +245,9 @@ GET      /api/v1/applications/{id}/timeseries?range=   the same, one row per day
 GET      /api/v1/applications/{id}/models?range=   breakdown by (provider, model), cost descending
 POST     /api/v1/applications/{id}/keys
 DELETE   /api/v1/keys/{id}
+GET      /api/v1/opportunities?status=&app_id=     detector output, newest-detected first
+GET      /api/v1/opportunities/{id}                one opportunity's full evidence/recommendation
+POST     /api/v1/opportunities/{id}/review         open -> reviewed
 ```
 
 `range` accepts `24h`, `7d`, `30d` (default), `90d`.
@@ -237,10 +265,11 @@ cmd/fluxen           combined gateway + control binary (the default deployment t
 cmd/fluxenctl        admin CLI (migrations, demo seeding)
 internal/config      env config, validated at boot
 internal/auth        password hashing, API keys, session store, key resolver
-internal/store       Postgres access: applications, api_keys, users, organizations, requests, rollups
+internal/store       Postgres access: applications, api_keys, users, organizations, requests, rollups, opportunities
 internal/gateway     the OpenAI-compatible ingress: auth, pipeline, streaming
 internal/ingest      async bounded queue + batch writer from gateway to Postgres
 internal/rollup      idempotent hourly/daily aggregation of requests into the rollup tables
+internal/detect      the Model Cost detector, suppression/ranking rules, and the Postgres-touching Runner
 internal/worker      the in-process background job scheduler
 internal/api         the control-plane HTTP API the dashboard talks to
 internal/health      dependency health checks (/readyz)
