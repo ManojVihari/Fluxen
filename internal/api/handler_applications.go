@@ -86,6 +86,39 @@ func (s *Server) handleListApplications(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, out)
 }
 
+// handleArchiveApplication and handleUnarchiveApplication toggle an
+// application's status (Part L: "delete or archive" — archive was chosen
+// over a hard delete since an application's historical rollups,
+// opportunities, and policy history all reference it by id, and none of
+// that should silently disappear just because someone tidied up their
+// applications list). Archiving is purely a visibility change in the
+// dashboard's default list; it neither revokes API keys nor stops the
+// gateway from routing the application's traffic.
+func (s *Server) handleArchiveApplication(w http.ResponseWriter, r *http.Request) {
+	s.setApplicationStatus(w, r, "archived")
+}
+
+func (s *Server) handleUnarchiveApplication(w http.ResponseWriter, r *http.Request) {
+	s.setApplicationStatus(w, r, "active")
+}
+
+func (s *Server) setApplicationStatus(w http.ResponseWriter, r *http.Request, status string) {
+	uc, _ := userFromRequest(r)
+	appID := types.AppID(chi.URLParam(r, "appID"))
+
+	app, err := s.Apps.UpdateStatus(r.Context(), uc.OrgID, appID, status)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "application not found")
+			return
+		}
+		s.Logger.Error("api: failed to update application status", "error", err, "status", status)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, toApplicationResponse(app))
+}
+
 // summaryResponse mirrors store.ApplicationSummary. Money stays a plain
 // int64 of micro-USD — the dashboard's <Money> convention (Part I.7)
 // arrives with the UI that renders it; the wire format is stable either

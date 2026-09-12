@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api, ApiError, type Application, type ApplicationSummary, type ProviderCredential } from "@/lib/api";
-import { Button, ErrorBanner } from "@/components/ui";
+import { Badge, Button, ErrorBanner, inputClass } from "@/components/ui";
 import { TopNav } from "@/components/top-nav";
 import { formatMoney, formatNumber } from "@/lib/format";
 
@@ -19,6 +19,22 @@ export default function ApplicationsPage() {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [creds, setCreds] = useState<ProviderCredential[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
+  const [archivingID, setArchivingID] = useState<string | null>(null);
+
+  async function toggleArchived(app: Application) {
+    setArchivingID(app.id);
+    try {
+      const updated =
+        app.status === "archived" ? await api.unarchiveApplication(app.id) : await api.archiveApplication(app.id);
+      setRows((prev) => prev?.map((r) => (r.id === app.id ? { ...r, status: updated.status } : r)) ?? prev);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to update application status.");
+    } finally {
+      setArchivingID(null);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -70,6 +86,16 @@ export default function ApplicationsPage() {
     };
   }, [router]);
 
+  const visibleRows = useMemo(() => {
+    if (!rows) return null;
+    const q = query.trim().toLowerCase();
+    return rows.filter((app) => {
+      if (!showArchived && app.status === "archived") return false;
+      if (!q) return true;
+      return app.name.toLowerCase().includes(q) || app.slug.toLowerCase().includes(q);
+    });
+  }, [rows, query, showArchived]);
+
   return (
     <>
       <TopNav />
@@ -111,44 +137,88 @@ export default function ApplicationsPage() {
       )}
 
       {rows && rows.length > 0 && (
-        <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-500">
-                <th className="px-4 py-2 font-medium">Application</th>
-                <th className="px-4 py-2 font-medium text-right">Spend (30d)</th>
-                <th className="px-4 py-2 font-medium text-right">Requests (30d)</th>
-                <th className="px-4 py-2 font-medium"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((app) => (
-                <tr key={app.id} className="border-b border-slate-100 last:border-0">
-                  <td className="px-4 py-3">
-                    <Link href={`/applications/${app.id}`} className="font-medium text-slate-900 hover:underline">
-                      {app.name}
-                    </Link>
-                    <p className="text-xs text-slate-500">{app.slug}</p>
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    {app.summary ? formatMoney(app.summary.cost_micro) : "—"}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    {app.summary ? formatNumber(app.summary.requests) : "—"}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <Link
-                      href={`/applications/${app.id}/connect`}
-                      className="text-sm font-medium text-slate-700 underline-offset-2 hover:underline"
-                    >
-                      Connect
-                    </Link>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <input
+              className={inputClass}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search applications…"
+              aria-label="Search applications"
+            />
+            <label className="flex shrink-0 items-center gap-2 text-sm text-slate-600">
+              <input
+                type="checkbox"
+                checked={showArchived}
+                onChange={(e) => setShowArchived(e.target.checked)}
+              />
+              Show archived
+            </label>
+          </div>
+
+          {visibleRows?.length === 0 && (
+            <p className="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
+              No applications match &ldquo;{query}&rdquo;.
+            </p>
+          )}
+
+          {visibleRows && visibleRows.length > 0 && (
+            <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-500">
+                    <th className="px-4 py-2 font-medium">Application</th>
+                    <th className="px-4 py-2 font-medium text-right">Spend (30d)</th>
+                    <th className="px-4 py-2 font-medium text-right">Requests (30d)</th>
+                    <th className="px-4 py-2 font-medium"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleRows.map((app) => (
+                    <tr key={app.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <Link href={`/applications/${app.id}`} className="font-medium text-slate-900 hover:underline">
+                            {app.name}
+                          </Link>
+                          {app.status === "archived" && <Badge>archived</Badge>}
+                        </div>
+                        <p className="text-xs text-slate-500">{app.slug}</p>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {app.summary ? formatMoney(app.summary.cost_micro) : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {app.summary ? formatNumber(app.summary.requests) : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-3">
+                          <Link
+                            href={`/applications/${app.id}/connect`}
+                            className="text-sm font-medium text-slate-700 underline-offset-2 hover:underline"
+                          >
+                            Connect
+                          </Link>
+                          <button
+                            onClick={() => toggleArchived(app)}
+                            disabled={archivingID === app.id}
+                            className="text-sm font-medium text-slate-500 underline-offset-2 hover:underline disabled:opacity-50"
+                          >
+                            {archivingID === app.id
+                              ? "…"
+                              : app.status === "archived"
+                                ? "Unarchive"
+                                : "Archive"}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
       )}
       </main>
     </>

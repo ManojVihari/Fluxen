@@ -391,6 +391,57 @@ func TestApplications_RequireAuth(t *testing.T) {
 	}
 }
 
+func TestApplications_ArchiveAndUnarchive(t *testing.T) {
+	_, client, baseURL, _ := newTestEnv(t)
+	app := setUpAndCreateApp(t, client, baseURL)
+
+	archiveResp := doJSON(t, client, http.MethodPost, baseURL+"/api/v1/applications/"+app.ID+"/archive", nil)
+	var archived applicationResponse
+	decodeJSON(t, archiveResp, &archived)
+	if archived.Status != "archived" {
+		t.Fatalf("expected status=archived, got %q", archived.Status)
+	}
+
+	// The application still shows up in the list — archiving is a
+	// visibility hint the dashboard applies client-side, not a filter
+	// the API enforces (Settings/history views still need it).
+	listResp := doJSON(t, client, http.MethodGet, baseURL+"/api/v1/applications", nil)
+	var apps []applicationResponse
+	decodeJSON(t, listResp, &apps)
+	found := false
+	for _, a := range apps {
+		if a.ID == app.ID {
+			found = true
+			if a.Status != "archived" {
+				t.Errorf("expected the listed application to show status=archived, got %q", a.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected the archived application to still appear in the list")
+	}
+
+	unarchiveResp := doJSON(t, client, http.MethodPost, baseURL+"/api/v1/applications/"+app.ID+"/unarchive", nil)
+	var unarchived applicationResponse
+	decodeJSON(t, unarchiveResp, &unarchived)
+	if unarchived.Status != "active" {
+		t.Fatalf("expected status=active after unarchiving, got %q", unarchived.Status)
+	}
+}
+
+func TestApplications_ArchiveUnknownApplicationReturns404(t *testing.T) {
+	_, client, baseURL, _ := newTestEnv(t)
+	doJSON(t, client, http.MethodPost, baseURL+"/api/v1/setup", setupRequest{
+		OrgName: "Acme", Email: "owner@example.com", Password: "supersecret123",
+	}).Body.Close()
+
+	resp := doJSON(t, client, http.MethodPost, baseURL+"/api/v1/applications/00000000-0000-0000-0000-000000000000/archive", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for an unknown application, got %d", resp.StatusCode)
+	}
+}
+
 // setUpAndCreateApp is the common prefix for the rollup-endpoint tests:
 // setup (which also logs in) plus one application.
 func setUpAndCreateApp(t *testing.T, client *http.Client, baseURL string) applicationResponse {

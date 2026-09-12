@@ -209,9 +209,9 @@ func (s *Server) handleApplyOpportunity(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, toPolicyResponse(rec))
 }
 
-// handleReviewOpportunity transitions open -> reviewed (Part G.1). The
-// dashboard also calls this automatically on first view of the detail
-// page; this endpoint just makes it possible to call explicitly too.
+// handleReviewOpportunity transitions open -> reviewed (Part G.1) — an
+// explicit "I've looked at this" action from the opportunity feed or its
+// detail page.
 func (s *Server) handleReviewOpportunity(w http.ResponseWriter, r *http.Request) {
 	uc, _ := userFromRequest(r)
 	id := chi.URLParam(r, "opportunityID")
@@ -223,6 +223,46 @@ func (s *Server) handleReviewOpportunity(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		s.Logger.Error("api: failed to review opportunity", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, toOpportunityResponse(o))
+}
+
+type dismissOpportunityRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+// handleDismissOpportunity is the "not now / maybe later" action — an
+// alternative to reviewing or applying, for a real finding the user
+// isn't going to act on right now. It never deletes anything: the
+// opportunity keeps its evidence and can re-open later if the detector
+// sees the same pattern again.
+func (s *Server) handleDismissOpportunity(w http.ResponseWriter, r *http.Request) {
+	uc, _ := userFromRequest(r)
+	id := chi.URLParam(r, "opportunityID")
+
+	var req dismissOpportunityRequest
+	// A body is optional here — dismissing without a reason is valid, so
+	// a missing/empty body is not an error, only a malformed one is.
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+	}
+
+	o, err := s.Opportunities.MarkDismissed(r.Context(), uc.OrgID, id, req.Reason)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "opportunity not found")
+			return
+		}
+		if errors.Is(err, store.ErrNotApplicable) {
+			writeError(w, http.StatusConflict, "this opportunity is not in a dismissable state")
+			return
+		}
+		s.Logger.Error("api: failed to dismiss opportunity", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}

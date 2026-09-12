@@ -157,10 +157,13 @@ func (s *Server) Router() chi.Router {
 			r.Get("/applications/{appID}/score/history", s.handleApplicationScoreHistory)
 			r.Post("/applications/{appID}/keys", s.handleCreateKey)
 			r.Delete("/keys/{keyID}", s.handleRevokeKey)
+			r.Post("/applications/{appID}/archive", s.handleArchiveApplication)
+			r.Post("/applications/{appID}/unarchive", s.handleUnarchiveApplication)
 
 			r.Get("/opportunities", s.handleListOpportunities)
 			r.Get("/opportunities/{opportunityID}", s.handleGetOpportunity)
 			r.Post("/opportunities/{opportunityID}/review", s.handleReviewOpportunity)
+			r.Post("/opportunities/{opportunityID}/dismiss", s.handleDismissOpportunity)
 			r.Post("/opportunities/{opportunityID}/apply", s.handleApplyOpportunity)
 
 			r.Post("/simulations", s.handleCreateSimulation)

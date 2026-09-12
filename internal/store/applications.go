@@ -159,6 +159,30 @@ func (a *Applications) SlugExists(ctx context.Context, orgID types.OrgID, slug s
 	return exists, nil
 }
 
+// UpdateStatus transitions an application between 'active' and
+// 'archived' (the schema also allows 'paused', unused by any caller
+// today). Archiving only ever changes what the dashboard's default list
+// shows — it does not revoke the application's API keys or stop the
+// gateway from routing its traffic, since an operator archiving an
+// application to declutter their own view isn't necessarily saying its
+// traffic should stop. Revoking keys is already its own explicit,
+// separate action (Part C.5).
+func (a *Applications) UpdateStatus(ctx context.Context, orgID types.OrgID, id types.AppID, status string) (Application, error) {
+	var app Application
+	err := a.pool.QueryRow(ctx, `
+		UPDATE applications SET status = $3
+		WHERE org_id = $1 AND id = $2
+		RETURNING id, org_id, slug, name, status, created_at, first_seen_at, last_seen_at
+	`, orgID, id, status).Scan(&app.ID, &app.OrgID, &app.Slug, &app.Name, &app.Status, &app.CreatedAt, &app.FirstSeenAt, &app.LastSeenAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return Application{}, ErrNotFound
+		}
+		return Application{}, fmt.Errorf("store: failed to update application status: %w", err)
+	}
+	return app, nil
+}
+
 // MarkSeen stamps first_seen_at (once) and last_seen_at (every time) for
 // an application that just received traffic. This is called from the
 // async ingest writer, never from the gateway's hot path (Part B.2).

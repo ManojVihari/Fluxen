@@ -68,6 +68,35 @@ test.describe("golden path: a real browser driving the actual dashboard", () => 
     await expect(page.getByText(/^connect it$/i)).toBeVisible();
   });
 
+  test("searches applications and archives/unarchives one via the real UI", async ({ page }) => {
+    await login(page);
+
+    const appName = `E2E Archive Target ${Date.now()}`;
+    await page.goto("/applications/new");
+    await page.getByLabel(/name/i).fill(appName);
+    await page.getByRole("button", { name: /create application/i }).click();
+    await expect(page).toHaveURL(/\/applications\/[^/]+\/connect$/, { timeout: 10_000 });
+
+    await page.goto("/applications");
+    await page.getByPlaceholder(/search applications/i).fill(appName);
+    const row = page.getByRole("row", { name: new RegExp(appName) });
+    await expect(row).toBeVisible();
+
+    await row.getByRole("button", { name: "Archive" }).click();
+    // Archived rows are hidden by default — the search box's own filter
+    // stays applied, so the row disappearing (not just an empty list) is
+    // the real signal here.
+    await expect(row).not.toBeVisible();
+
+    await page.getByLabel(/show archived/i).check();
+    const archivedRow = page.getByRole("row", { name: new RegExp(appName) });
+    await expect(archivedRow).toBeVisible();
+    await expect(archivedRow.getByText("archived", { exact: true })).toBeVisible();
+
+    await archivedRow.getByRole("button", { name: "Unarchive" }).click();
+    await expect(archivedRow.getByText("archived", { exact: true })).not.toBeVisible();
+  });
+
   test("settings > providers page lists all three providers", async ({ page }) => {
     await login(page);
 

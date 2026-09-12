@@ -102,6 +102,8 @@ export const api = {
   listApplications: () => get<Application[]>("/api/v1/applications"),
   createApplication: (body: { name: string }) =>
     post<Application>("/api/v1/applications", body),
+  archiveApplication: (appId: string) => post<Application>(`/api/v1/applications/${appId}/archive`),
+  unarchiveApplication: (appId: string) => post<Application>(`/api/v1/applications/${appId}/unarchive`),
 
   createKey: (appId: string, body: { name: string }) =>
     post<ApiKey>(`/api/v1/applications/${appId}/keys`, body),
@@ -123,6 +125,8 @@ export const api = {
   },
   getOpportunity: (id: string) => get<Opportunity>(`/api/v1/opportunities/${id}`),
   reviewOpportunity: (id: string) => post<Opportunity>(`/api/v1/opportunities/${id}/review`),
+  dismissOpportunity: (id: string, reason?: string) =>
+    post<Opportunity>(`/api/v1/opportunities/${id}/dismiss`, reason ? { reason } : undefined),
 
   createSimulation: (body: CreateSimulationRequest) => post<Simulation>("/api/v1/simulations", body),
   getSimulation: (id: string) => get<Simulation>(`/api/v1/simulations/${id}`),

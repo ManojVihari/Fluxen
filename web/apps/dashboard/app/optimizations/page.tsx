@@ -7,6 +7,7 @@ import { api, ApiError, type Application, type Opportunity } from "@/lib/api";
 import { Badge, EmptyState, ErrorBanner } from "@/components/ui";
 import { TopNav } from "@/components/top-nav";
 import { formatMoney, formatPercent } from "@/lib/format";
+import { confidenceStyle, severityStyle, statusStyle } from "@/lib/opportunity-status";
 
 const STATUS_OPTIONS = ["open", "reviewed", "simulated", "applied", "dismissed", "stale", "reverted"];
 const KIND_OPTIONS = ["model_cost", "repeated_request", "token_efficiency", "traffic_anomaly"];
@@ -117,19 +118,20 @@ export default function OptimizationsPage() {
                 className="flex items-center justify-between gap-4 px-4 py-3 hover:bg-slate-50"
               >
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-slate-900">{o.title}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="truncate text-sm font-medium text-slate-900">{o.title}</p>
+                    <Badge tone={statusStyle(o.status).tone}>{statusStyle(o.status).label}</Badge>
+                  </div>
                   <p className="mt-0.5 text-xs text-slate-500">
-                    {appNameById.get(o.app_id) ?? o.app_id} · {o.status} · {o.kind.replace(/_/g, " ")}
+                    {appNameById.get(o.app_id) ?? o.app_id} · {o.kind.replace(/_/g, " ")}
                     {o.kind !== "traffic_anomaly" && <> · est. {formatPercent(o.savings_pct)} savings</>}
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  <Badge tone={o.confidence === "high" ? "good" : o.confidence === "low" ? "warn" : "neutral"}>
-                    {o.confidence}
-                  </Badge>
+                  <Badge tone={confidenceStyle(o.confidence).tone}>{o.confidence} confidence</Badge>
                   {o.kind === "traffic_anomaly" ? (
                     o.severity && (
-                      <Badge tone={o.severity === "high" ? "warn" : "neutral"}>{o.severity}</Badge>
+                      <Badge tone={severityStyle(o.severity).tone}>{o.severity} severity</Badge>
                     )
                   ) : (
                     <span className="text-sm font-medium text-slate-900">

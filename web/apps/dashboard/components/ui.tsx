@@ -110,16 +110,25 @@ export function Badge({
   title,
 }: {
   children: ReactNode;
-  tone?: "neutral" | "warn" | "good";
+  tone?: "neutral" | "warn" | "good" | "danger" | "info";
   title?: string;
 }) {
   const tones: Record<string, string> = {
     neutral: "bg-slate-100 text-slate-600",
     warn: "bg-amber-100 text-amber-700",
     good: "bg-emerald-100 text-emerald-700",
+    // danger: something bad (a regression, a high-severity signal) —
+    // distinct from warn's "worth a look" and good's "this is fine",
+    // never reused for "high confidence" (that's good, not a warning).
+    danger: "bg-red-100 text-red-700",
+    // info: a neutral-but-distinguishing label (a status like
+    // "reviewed" or "dismissed" that isn't good or bad news, just a
+    // fact) — visually different from plain neutral gray so it doesn't
+    // read as "unknown/default."
+    info: "bg-blue-100 text-blue-700",
   };
   return (
-    <span title={title} className={`rounded-full px-2 py-0.5 text-xs ${tones[tone]}`}>
+    <span title={title} className={`rounded-full px-2 py-0.5 text-xs font-medium ${tones[tone]}`}>
       {children}
     </span>
   );

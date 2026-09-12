@@ -20,6 +20,7 @@ import {
 import { Badge, Button, ErrorBanner } from "@/components/ui";
 import { BarChart } from "@/components/bar-chart";
 import { formatMoney, formatNumber, formatPercent } from "@/lib/format";
+import { confidenceStyle, severityStyle, statusStyle } from "@/lib/opportunity-status";
 
 // The Optimizations detail page — Part I.2's core Fluxen UX, strictly
 // ordered Why -> Evidence -> Impact -> Simulate -> Apply -> Measure.
@@ -42,15 +43,6 @@ export default function OpportunityDetailPage() {
       .then((o) => {
         if (cancelled) return;
         setOpportunity(o);
-        // Auto-transition open -> reviewed on first view (Part G.1).
-        if (o.status === "open") {
-          api.reviewOpportunity(params.id).then((reviewed) => {
-            if (!cancelled) setOpportunity(reviewed);
-          }).catch(() => {
-            // Non-critical — the view still renders with the un-reviewed
-            // status if this fails.
-          });
-        }
       })
       .catch((err) => {
         if (cancelled) return;
@@ -83,6 +75,7 @@ export default function OpportunityDetailPage() {
       {opportunity && (
         <div className="mt-4 space-y-6">
           <Header opportunity={opportunity} />
+          <ReviewDismissActions opportunity={opportunity} onChange={setOpportunity} />
           <WhySection opportunity={opportunity} />
           <EvidenceSection opportunity={opportunity} />
           <ImpactSection opportunity={opportunity} />
@@ -105,17 +98,105 @@ function Header({ opportunity }: { opportunity: Opportunity }) {
   return (
     <div className="flex items-start justify-between gap-4">
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">{opportunity.title}</h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-xl font-semibold text-slate-900">{opportunity.title}</h1>
+          <Badge tone={statusStyle(opportunity.status).tone}>{statusStyle(opportunity.status).label}</Badge>
+        </div>
         <p className="mt-1 text-xs uppercase tracking-wide text-slate-400">
-          {opportunity.status} · {opportunity.kind.replace("_", " ")}
+          {opportunity.kind.replace("_", " ")}
         </p>
       </div>
-      <Badge
-        tone={opportunity.confidence === "high" ? "good" : opportunity.confidence === "low" ? "warn" : "neutral"}
-        title={confidenceTooltip}
-      >
+      <Badge tone={confidenceStyle(opportunity.confidence).tone} title={confidenceTooltip}>
         {opportunity.confidence} confidence
       </Badge>
+    </div>
+  );
+}
+
+// ReviewDismissActions replaces the old "auto-marks reviewed just from
+// opening the page" behavior with two explicit choices: acknowledge it
+// (Mark reviewed) or set it aside (Dismiss — "not now," with an optional
+// reason, never a delete). Only shown while the opportunity is still in
+// an actionable state; once applied/dismissed/reverted, the outcome
+// itself is the record and these actions no longer apply.
+function ReviewDismissActions({
+  opportunity,
+  onChange,
+}: {
+  opportunity: Opportunity;
+  onChange: (o: Opportunity) => void;
+}) {
+  const [dismissing, setDismissing] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!["open", "reviewed", "simulated"].includes(opportunity.status)) {
+    return null;
+  }
+
+  async function markReviewed() {
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await api.reviewOpportunity(opportunity.id));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to mark as reviewed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmDismiss() {
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await api.dismissOpportunity(opportunity.id, reason || undefined));
+      setDismissing(false);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to dismiss.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <ErrorBanner message={error} />
+      {!dismissing ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {opportunity.status === "open" && (
+            <Button variant="secondary" onClick={markReviewed} disabled={busy}>
+              Mark reviewed
+            </Button>
+          )}
+          <Button variant="secondary" onClick={() => setDismissing(true)} disabled={busy}>
+            Dismiss (maybe later)
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-sm font-medium text-slate-900">Dismiss this opportunity?</p>
+          <p className="text-xs text-slate-500">
+            It leaves the open feed but isn&apos;t deleted — if Fluxen sees the same pattern again later,
+            it can re-open.
+          </p>
+          <input
+            className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Reason (optional)"
+          />
+          <div className="flex gap-2">
+            <Button onClick={confirmDismiss} disabled={busy}>
+              {busy ? "Dismissing…" : "Confirm dismiss"}
+            </Button>
+            <Button variant="secondary" onClick={() => { setDismissing(false); setReason(""); setError(null); }}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -369,7 +450,7 @@ function TrafficAnomalyEvidenceSection({ opportunity }: { opportunity: Opportuni
     <Section title="Evidence">
       <div className="space-y-4">
         <div className="flex items-center gap-3 text-sm">
-          <Badge tone={opportunity.severity === "high" ? "warn" : "neutral"}>
+          <Badge tone={severityStyle(opportunity.severity ?? "medium").tone}>
             {opportunity.severity ?? "medium"} severity
           </Badge>
           <span className="text-slate-700">{evidence.metric.replace(/_/g, " ")} anomaly</span>
@@ -796,11 +877,11 @@ function ApplyAction({
   );
 }
 
-const verdictCopy: Record<string, { label: string; tone: "good" | "warn" | "neutral"; explain: string }> = {
+const verdictCopy: Record<string, { label: string; tone: "good" | "warn" | "neutral" | "danger"; explain: string }> = {
   successful: { label: "Successful", tone: "good", explain: "Realized savings reached at least 70% of the estimate." },
   partial: { label: "Partial", tone: "neutral", explain: "Realized savings reached 20–70% of the estimate." },
   no_effect: { label: "No effect", tone: "neutral", explain: "Cost per 1,000 requests changed by less than 2% — no meaningful effect either way." },
-  regressed: { label: "Regressed", tone: "warn", explain: "Cost per 1,000 requests increased by more than 2% since applying." },
+  regressed: { label: "Regressed", tone: "danger", explain: "Cost per 1,000 requests increased by more than 2% since applying." },
   inconclusive: { label: "Inconclusive", tone: "warn", explain: "Not enough clean signal yet to call this one way or the other." },
 };
 

@@ -202,6 +202,40 @@ func (o *Opportunities) MarkReviewed(ctx context.Context, orgID types.OrgID, id 
 	return out, nil
 }
 
+// MarkDismissed transitions an opportunity to 'dismissed' — the "not now
+// / maybe later" action (Part G.1's lifecycle always reserved this
+// status; nothing ever wired it up to a real endpoint until now). Valid
+// from the same open/reviewed/simulated states Apply accepts from — a
+// dismissal is an alternative resolution to applying, not a state that
+// can follow it. A dismissed opportunity's fingerprint can still re-open
+// later if the detector sees the underlying pattern again (Part L Phase
+// 3's own note on this), so dismissing is a "not now," never a
+// permanent block.
+func (o *Opportunities) MarkDismissed(ctx context.Context, orgID types.OrgID, id string, reason string) (Opportunity, error) {
+	var reasonArg *string
+	if reason != "" {
+		reasonArg = &reason
+	}
+	row := o.pool.QueryRow(ctx, `
+		UPDATE opportunities
+		SET status = 'dismissed', dismissed_at = now(), dismiss_reason = $3
+		WHERE org_id = $1 AND id = $2 AND status IN ('open', 'reviewed', 'simulated')
+		RETURNING `+opportunityColumns,
+		orgID, id, reasonArg,
+	)
+	out, err := scanOpportunity(row)
+	if err == ErrNotFound {
+		if _, getErr := o.Get(ctx, orgID, id); getErr != nil {
+			return Opportunity{}, getErr
+		}
+		return Opportunity{}, ErrNotApplicable
+	}
+	if err != nil {
+		return Opportunity{}, fmt.Errorf("store: failed to dismiss opportunity: %w", err)
+	}
+	return out, nil
+}
+
 // ErrNotApplicable is returned by MarkApplied when the opportunity is
 // already applied, dismissed, stale, or reverted — Apply is only valid
 // from open/reviewed/simulated (Part G.1's lifecycle), and this method
