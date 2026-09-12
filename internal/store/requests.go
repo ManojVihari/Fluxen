@@ -191,6 +191,24 @@ func (r *Requests) ReplayFacts(ctx context.Context, appID types.AppID, since, un
 	return facts, nil
 }
 
+// PeriodStats returns the total request count and cost for an
+// application over [since, until) — the raw material Phase 6's baseline
+// freeze and observed-window comparison both need. Only status='ok'
+// requests count, the same population Part G.3.1's detector and Phase
+// 4/5's simulations use (Rule 9-adjacent consistency: every subsystem
+// that reasons about "real served traffic" agrees on what that means).
+func (r *Requests) PeriodStats(ctx context.Context, appID types.AppID, since, until time.Time) (requests int64, costMicro int64, err error) {
+	err = r.pool.QueryRow(ctx, `
+		SELECT count(*), COALESCE(sum(cost_micro), 0)
+		FROM requests
+		WHERE app_id = $1 AND started_at >= $2 AND started_at < $3 AND status = 'ok'
+	`, appID, since, until).Scan(&requests, &costMicro)
+	if err != nil {
+		return 0, 0, fmt.Errorf("store: failed to load period stats: %w", err)
+	}
+	return requests, costMicro, nil
+}
+
 func nullableString(s string) any {
 	if s == "" {
 		return nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"fluxen/internal/store"
 	corepolicy "fluxen/pkg/policy"
@@ -39,17 +40,44 @@ type ApplyInput struct {
 	ChangedBy     *types.UserID
 }
 
+// FreezeInput is what a BaselineFreezer needs to create a Phase 6
+// measurement — defined here (not in internal/measure) so this package
+// can declare the interface below without importing internal/measure,
+// which itself needs to read policy_history for confound detection
+// (Store.ChangedSince) and would otherwise create an import cycle.
+type FreezeInput struct {
+	OrgID                types.OrgID
+	AppID                types.AppID
+	OpportunityID        string
+	SimulationID         string
+	PolicyVersion        int
+	AppliedAt            time.Time
+	ExpectedSavingsMicro int64
+	ExpectedPct          float64
+}
+
+// BaselineFreezer freezes a Phase 6 measurement's baseline at apply time
+// (Part G.5 step 4: "capturing the 14 days immediately preceding
+// applied_at ... computed and stored at apply time"). Implemented by
+// internal/measure.Freezer; Applier only depends on this interface, not
+// on internal/measure directly.
+type BaselineFreezer interface {
+	Freeze(ctx context.Context, in FreezeInput) error
+}
+
 // Applier is the apply transaction (Part G.5, Part L Phase 5 backend
 // tasks): validate, save the new policy version with its history entry,
-// transition the opportunity to applied, and invalidate the gateway's
-// cached snapshot — all four happen, in that order, or none of the
-// policy-affecting ones do (the opportunity transition is a separate,
-// non-transactional step; see MarkApplied's own doc comment for why).
+// transition the opportunity to applied, freeze the Phase 6 measurement
+// baseline, and invalidate the gateway's cached snapshot — all happen in
+// that order, or none of the policy-affecting ones do (the opportunity
+// transition and baseline freeze are separate, non-transactional steps;
+// see MarkApplied's own doc comment for why).
 type Applier struct {
 	Policies      *Store
 	Opportunities *store.Opportunities
 	Simulations   *store.Simulations
-	Snapshot      *Snapshot // nil-safe: a caller without a live gateway (e.g. a test) can omit it
+	Snapshot      *Snapshot       // nil-safe: a caller without a live gateway (e.g. a test) can omit it
+	Measurer      BaselineFreezer // nil-safe: omitted before Phase 6 wiring, or in tests that don't care about it
 }
 
 // Apply runs the transaction. The caller (internal/api's handler) owns
@@ -109,7 +137,15 @@ func (a *Applier) Apply(ctx context.Context, in ApplyInput) (Record, error) {
 		return Record{}, fmt.Errorf("policy: policy saved but failed to transition opportunity to applied: %w", err)
 	}
 
-	freezeBaseline(ctx, in.AppID, in.OpportunityID)
+	if a.Measurer != nil {
+		if err := a.Measurer.Freeze(ctx, FreezeInput{
+			OrgID: in.OrgID, AppID: in.AppID, OpportunityID: in.OpportunityID, SimulationID: in.SimulationID,
+			PolicyVersion: saved.Version, AppliedAt: time.Now().UTC(),
+			ExpectedSavingsMicro: opp.SavingsMicro, ExpectedPct: opp.SavingsPct,
+		}); err != nil {
+			return Record{}, fmt.Errorf("policy: policy applied but failed to freeze the measurement baseline: %w", err)
+		}
+	}
 
 	if a.Snapshot != nil {
 		a.Snapshot.Invalidate(ctx, in.AppID)
@@ -117,12 +153,3 @@ func (a *Applier) Apply(ctx context.Context, in ApplyInput) (Record, error) {
 
 	return saved, nil
 }
-
-// freezeBaseline is Phase 6's hook, called here on purpose one phase
-// early (Part L Phase 5 tests: "the full apply transaction including
-// baseline handling stub — full baseline freeze lands in Phase 6, but
-// apply.go must already call into it"). It is intentionally a no-op:
-// Phase 6 builds the measurements table and the real 14-day-baseline
-// capture (Part G.5) this name promises; building that table now would
-// be Phase 6 work done early (Rule 16).
-func freezeBaseline(_ context.Context, _ types.AppID, _ string) {}

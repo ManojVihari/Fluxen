@@ -6,6 +6,7 @@ import { useParams, useRouter } from "next/navigation";
 import {
   api,
   ApiError,
+  type Measurement,
   type ModelCostEvidence,
   type ModelCostRecommendation,
   type ModelMixBreakdownRow,
@@ -18,9 +19,9 @@ import { formatMoney, formatNumber, formatPercent } from "@/lib/format";
 // The Optimizations detail page — Part I.2's core Fluxen UX, strictly
 // ordered Why -> Evidence -> Impact -> Simulate -> Apply -> Measure.
 // Phase 3 built the first three sections against real detector output;
-// Phase 4 makes Simulate fully functional for the model-cost kind
-// (Part L Phase 4 frontend tasks); Apply/Measure stay a disabled
-// preview of Phase 5/6.
+// Phase 4 made Simulate fully functional; Phase 5 made Apply fully
+// functional; Phase 6 makes Measure fully functional — the honest
+// before/after verdict on whether an applied change actually worked.
 export default function OpportunityDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -81,6 +82,7 @@ export default function OpportunityDetailPage() {
           <EvidenceSection opportunity={opportunity} />
           <ImpactSection opportunity={opportunity} />
           <SimulateSection opportunity={opportunity} />
+          <MeasureSection opportunity={opportunity} />
         </div>
       )}
     </main>
@@ -474,6 +476,180 @@ function ApplyAction({
           {applying ? "Applying…" : "Confirm apply"}
         </Button>
         <Button variant="secondary" onClick={() => { setOpen(false); setSlug(""); setError(null); }}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+const verdictCopy: Record<string, { label: string; tone: "good" | "warn" | "neutral"; explain: string }> = {
+  successful: { label: "Successful", tone: "good", explain: "Realized savings reached at least 70% of the estimate." },
+  partial: { label: "Partial", tone: "neutral", explain: "Realized savings reached 20–70% of the estimate." },
+  no_effect: { label: "No effect", tone: "neutral", explain: "Cost per 1,000 requests changed by less than 2% — no meaningful effect either way." },
+  regressed: { label: "Regressed", tone: "warn", explain: "Cost per 1,000 requests increased by more than 2% since applying." },
+  inconclusive: { label: "Inconclusive", tone: "warn", explain: "Not enough clean signal yet to call this one way or the other." },
+};
+
+// MeasureSection only appears once an opportunity has actually been
+// applied — Part I.2: "Measure — appears only once status = applied."
+// It shows collecting/interim/final states, the before/after comparison,
+// and — only on a regressed verdict — the one-click Revert (Part G.5).
+function MeasureSection({ opportunity }: { opportunity: Opportunity }) {
+  const [measurement, setMeasurement] = useState<Measurement | null | "none">(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (opportunity.status !== "applied" && opportunity.status !== "reverted") {
+      setMeasurement("none");
+      return;
+    }
+    let cancelled = false;
+    api
+      .getOpportunityMeasurement(opportunity.id)
+      .then((m) => {
+        if (!cancelled) setMeasurement(m);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 404) {
+          setMeasurement("none");
+          return;
+        }
+        setError(err instanceof ApiError ? err.message : "Failed to load measurement.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [opportunity.id, opportunity.status]);
+
+  if (measurement === "none") {
+    return null; // not applied (yet) — Measure simply doesn't exist here
+  }
+
+  return (
+    <Section title="Measure">
+      <ErrorBanner message={error} />
+      {measurement === null && !error && <p className="text-sm text-slate-500">Loading…</p>}
+      {measurement && <MeasureContent measurement={measurement} onReverted={setMeasurement} />}
+    </Section>
+  );
+}
+
+function MeasureContent({ measurement, onReverted }: { measurement: Measurement; onReverted: (m: Measurement) => void }) {
+  if (measurement.status === "collecting") {
+    return (
+      <div className="space-y-2">
+        <Badge>collecting</Badge>
+        <p className="text-sm text-slate-600">
+          Applied {new Date(measurement.applied_at).toLocaleDateString()}. The interim check runs 7 days after
+          applying; the final verdict, 14 days after. Baseline (the 14 days before applying): est.{" "}
+          {formatMoney(measurement.baseline_cost_per_1k_micro)} per 1,000 requests, from{" "}
+          {formatNumber(measurement.baseline_requests)} requests.
+        </p>
+      </div>
+    );
+  }
+
+  const verdict = measurement.verdict ? verdictCopy[measurement.verdict] : null;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <Badge tone={measurement.status === "interim" ? "neutral" : "good"}>
+          {measurement.status === "interim" ? "interim result" : "final result"}
+        </Badge>
+        {verdict && <Badge tone={verdict.tone}>{verdict.label}</Badge>}
+      </div>
+
+      {verdict && <p className="text-sm text-slate-700">{verdict.explain}</p>}
+
+      <div className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
+        <div>
+          <p className="text-xs uppercase tracking-wide text-slate-500">measured baseline / 1k</p>
+          <p className="mt-0.5 text-base font-semibold text-slate-900">
+            {formatMoney(measurement.baseline_cost_per_1k_micro)}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-wide text-slate-500">measured observed / 1k</p>
+          <p className="mt-0.5 text-base font-semibold text-slate-900">
+            {measurement.observed_cost_per_1k_micro != null ? formatMoney(measurement.observed_cost_per_1k_micro) : "—"}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-wide text-slate-500">realized savings</p>
+          <p className="mt-0.5 text-base font-semibold text-slate-900">
+            {measurement.actual_savings_micro != null ? formatMoney(measurement.actual_savings_micro) : "—"}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-wide text-slate-500">est. expected</p>
+          <p className="mt-0.5 text-base font-semibold text-slate-900">{formatPercent(measurement.expected_pct)}</p>
+        </div>
+      </div>
+
+      <p className="text-xs text-slate-400">
+        Observed over {measurement.observed_requests != null ? formatNumber(measurement.observed_requests) : "—"}{" "}
+        requests
+        {measurement.observed_start && measurement.observed_end
+          ? ` (${measurement.observed_start.slice(0, 10)} – ${measurement.observed_end.slice(0, 10)})`
+          : ""}
+        . Compared as cost per 1,000 requests, not raw totals, since traffic volume always moves.
+      </p>
+
+      {measurement.verdict === "regressed" && measurement.status !== "reverted" && (
+        <RevertAction measurement={measurement} onReverted={onReverted} />
+      )}
+      {measurement.status === "reverted" && (
+        <p className="rounded-md bg-slate-100 px-3 py-2 text-xs text-slate-600">
+          This change was reverted — the policy has been restored to what it was before applying.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function RevertAction({ measurement, onReverted }: { measurement: Measurement; onReverted: (m: Measurement) => void }) {
+  const [open, setOpen] = useState(false);
+  const [reverting, setReverting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function confirmRevert() {
+    setReverting(true);
+    setError(null);
+    try {
+      await api.revertMeasurement(measurement.id, { confirm: true, note: "reverted after a regressed verdict" });
+      onReverted({ ...measurement, status: "reverted" });
+      setOpen(false);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to revert.");
+    } finally {
+      setReverting(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <Button variant="danger" onClick={() => setOpen(true)}>
+        Revert
+      </Button>
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-red-200 bg-red-50 p-4">
+      <p className="mb-2 text-sm font-medium text-slate-900">Revert this change?</p>
+      <p className="mb-3 text-xs text-slate-600">
+        This restores the policy exactly as it was before applying. The opportunity may re-open later if the
+        underlying inefficiency still exists.
+      </p>
+      <ErrorBanner message={error} />
+      <div className="flex gap-2">
+        <Button variant="danger" onClick={confirmRevert} disabled={reverting}>
+          {reverting ? "Reverting…" : "Confirm revert"}
+        </Button>
+        <Button variant="secondary" onClick={() => { setOpen(false); setError(null); }}>
           Cancel
         </Button>
       </div>

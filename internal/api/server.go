@@ -4,10 +4,12 @@
 // summary/timeseries/models rollup reads Application Detail needs; Phase
 // 3 added read access to detector output (opportunities); Phase 4 added
 // simulations (replay a scenario against real history, read-only,
-// production untouched); Phase 5 adds the policy editor and the Apply
+// production untouched); Phase 5 added the policy editor and the Apply
 // action that turns a proven recommendation into a real, enforced
-// change — everything else (overview, requests, measure, ...) arrives
-// in later phases.
+// change; Phase 6 adds measurements — the honest before/after verdict on
+// whether an applied change actually worked, and the one-click Revert a
+// regression surfaces — everything else (overview, requests, ...)
+// arrives in later phases.
 package api
 
 import (
@@ -33,6 +35,7 @@ type Server struct {
 	Rollups       *store.Rollups
 	Opportunities *store.Opportunities
 	Simulations   *store.Simulations
+	Measurements  *store.Measurements
 	Sessions      *auth.SessionStore
 
 	// Policies is the direct read/write path for GET/PUT policy and
@@ -118,6 +121,11 @@ func (s *Server) Router() chi.Router {
 			r.Put("/applications/{appID}/policy", s.handlePutPolicy)
 			r.Get("/applications/{appID}/policy/history", s.handlePolicyHistory)
 			r.Post("/applications/{appID}/policy/revert", s.handleRevertPolicy)
+
+			r.Get("/measurements", s.handleListMeasurements)
+			r.Get("/measurements/{measurementID}", s.handleGetMeasurement)
+			r.Post("/measurements/{measurementID}/revert", s.handleRevertMeasurement)
+			r.Get("/opportunities/{opportunityID}/measurement", s.handleGetOpportunityMeasurement)
 		})
 	})
 

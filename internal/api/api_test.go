@@ -18,6 +18,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"fluxen/internal/auth"
+	"fluxen/internal/measure"
 	"fluxen/internal/policy"
 	"fluxen/internal/store"
 	"fluxen/pkg/pricing"
@@ -90,8 +91,10 @@ func newTestEnv(t *testing.T) (*Server, *http.Client, string, *pgxpool.Pool) {
 
 	apps := store.NewApplications(pool)
 	keys := store.NewAPIKeys(pool)
+	requests := store.NewRequests(pool)
 	opportunities := store.NewOpportunities(pool)
 	simulations := store.NewSimulations(pool)
+	measurements := store.NewMeasurements(pool)
 	policyStore := policy.NewStore(pool)
 	catalog, err := pricing.LoadEmbedded()
 	if err != nil {
@@ -102,13 +105,15 @@ func newTestEnv(t *testing.T) (*Server, *http.Client, string, *pgxpool.Pool) {
 		Users:         store.NewUsers(pool),
 		Apps:          apps,
 		Keys:          keys,
-		Requests:      store.NewRequests(pool),
+		Requests:      requests,
 		Rollups:       store.NewRollups(pool),
 		Opportunities: opportunities,
 		Simulations:   simulations,
+		Measurements:  measurements,
 		Policies:      policyStore,
 		Applier: &policy.Applier{
 			Policies: policyStore, Opportunities: opportunities, Simulations: simulations,
+			Measurer: measure.NewFreezer(requests, measurements),
 		},
 		Catalog:  catalog,
 		Sessions: auth.NewSessionStore(redisClient),

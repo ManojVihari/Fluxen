@@ -6,11 +6,14 @@
 // (Part C.7) running the rollup.hourly/rollup.daily jobs that turn raw
 // requests into the aggregates Application Detail reads. Phase 3 added
 // the detect.model_cost job — the Aha Moment: real traffic in, a
-// credible optimization opportunity out. Phase 5 wires the five control
+// credible optimization opportunity out. Phase 5 wired the five control
 // surfaces (model routing, exact caching, budget, rate limit, model
 // restriction) into the live gateway pipeline for real, replacing the
-// no-op stages every earlier phase ran with. Gemini/Ollama and the other
-// three detectors arrive in later phases.
+// no-op stages every earlier phase ran with. Phase 6 adds the
+// measure.check job — interim (+7d) and final (+14d) checks that close
+// the loop between what an applied change was estimated to save and
+// what it actually did. Gemini/Ollama and the other three detectors
+// arrive in later phases.
 package main
 
 import (
@@ -32,6 +35,7 @@ import (
 	"fluxen/internal/guard"
 	"fluxen/internal/health"
 	"fluxen/internal/ingest"
+	"fluxen/internal/measure"
 	"fluxen/internal/observability"
 	"fluxen/internal/policy"
 	"fluxen/internal/rollup"
@@ -90,6 +94,7 @@ func run() error {
 	rollups := store.NewRollups(pool)
 	opportunities := store.NewOpportunities(pool)
 	simulations := store.NewSimulations(pool)
+	measurements := store.NewMeasurements(pool)
 	policyStore := policy.NewStore(pool)
 
 	// --- gateway ---
@@ -117,6 +122,7 @@ func run() error {
 
 	applier := &policy.Applier{
 		Policies: policyStore, Opportunities: opportunities, Simulations: simulations, Snapshot: policySnapshot,
+		Measurer: measure.NewFreezer(requests, measurements),
 	}
 
 	var provider providers.Provider = openai.NewClient(nil)
@@ -137,6 +143,7 @@ func run() error {
 		Rollups:         rollups,
 		Opportunities:   opportunities,
 		Simulations:     simulations,
+		Measurements:    measurements,
 		Policies:        policyStore,
 		Applier:         applier,
 		PolicySnapshot:  policySnapshot,
@@ -170,6 +177,12 @@ func run() error {
 		Name:     "detect.model_cost",
 		Interval: 15 * time.Minute,
 		Run:      detectRunner.Run,
+	})
+	measureRunner := measure.NewRunner(measurements, opportunities, requests, policyStore, logger)
+	scheduler.Register(worker.Job{
+		Name:     "measure.check",
+		Interval: time.Hour,
+		Run:      measureRunner.Run,
 	})
 
 	schedulerCtx, stopScheduler := context.WithCancel(context.Background())

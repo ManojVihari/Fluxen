@@ -191,3 +191,23 @@ func (s *Store) AtVersion(ctx context.Context, appID types.AppID, version int) (
 	}
 	return out, nil
 }
+
+// ChangedSince reports whether an application's policy has changed
+// (a new version landed) after atVersion and before the given instant —
+// Phase 6's confound detection (Part G.5: "a second policy change landed
+// inside the measurement window" makes a verdict inconclusive, since
+// there's no way to attribute an observed cost change to one control
+// change over the other).
+func (s *Store) ChangedSince(ctx context.Context, appID types.AppID, atVersion int, before time.Time) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM policy_history
+			WHERE app_id = $1 AND version > $2 AND changed_at < $3
+		)
+	`, appID, atVersion, before).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("policy: failed to check for a confounding policy change: %w", err)
+	}
+	return exists, nil
+}

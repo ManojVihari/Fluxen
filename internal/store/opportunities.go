@@ -234,3 +234,28 @@ func (o *Opportunities) MarkApplied(ctx context.Context, orgID types.OrgID, id s
 	}
 	return out, nil
 }
+
+// MarkReverted transitions an opportunity to 'reverted' (Part G.5: "a
+// regressed verdict always surfaces a one-click Revert ... marks the
+// opportunity reverted"). Only reachable from 'applied' — a Revert only
+// ever undoes something that was actually applied.
+func (o *Opportunities) MarkReverted(ctx context.Context, orgID types.OrgID, id string) (Opportunity, error) {
+	row := o.pool.QueryRow(ctx, `
+		UPDATE opportunities
+		SET status = 'reverted'
+		WHERE org_id = $1 AND id = $2 AND status = 'applied'
+		RETURNING `+opportunityColumns,
+		orgID, id,
+	)
+	out, err := scanOpportunity(row)
+	if err == ErrNotFound {
+		if _, getErr := o.Get(ctx, orgID, id); getErr != nil {
+			return Opportunity{}, getErr
+		}
+		return Opportunity{}, ErrNotApplicable
+	}
+	if err != nil {
+		return Opportunity{}, fmt.Errorf("store: failed to mark opportunity reverted: %w", err)
+	}
+	return out, nil
+}

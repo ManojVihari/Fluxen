@@ -136,6 +136,13 @@ export const api = {
 
   applyOpportunity: (opportunityId: string, body: ApplyOpportunityRequest) =>
     post<PolicyResponse>(`/api/v1/opportunities/${opportunityId}/apply`, body),
+
+  listMeasurements: (appId: string) => get<Measurement[]>(`/api/v1/measurements?app_id=${appId}`),
+  getMeasurement: (id: string) => get<Measurement>(`/api/v1/measurements/${id}`),
+  getOpportunityMeasurement: (opportunityId: string) =>
+    get<Measurement>(`/api/v1/opportunities/${opportunityId}/measurement`),
+  revertMeasurement: (id: string, body: { confirm: boolean; note?: string }) =>
+    post<PolicyResponse>(`/api/v1/measurements/${id}/revert`, body),
 };
 
 // Matches the ?range= values internal/api/timerange.go accepts.
@@ -369,6 +376,45 @@ export interface ApplyOpportunityRequest {
   simulation_id: string;
   routing: { from_model: string; to_model: string; weight: number; sticky: boolean };
   note?: string;
+}
+
+// Measurement mirrors internal/api's measurementResponse (Part L Phase
+// 6). Baseline/observed figures are "measured" (real recorded traffic);
+// actual_savings_micro/actual_pct only exist once status is "final" —
+// that's "realized," Part G.6's fourth and last value type.
+export type MeasurementStatus = "collecting" | "interim" | "final" | "reverted";
+export type Verdict = "successful" | "partial" | "no_effect" | "regressed" | "inconclusive";
+
+export interface Measurement {
+  id: string;
+  app_id: string;
+  opportunity_id: string;
+  simulation_id?: string;
+  policy_version: number;
+  applied_at: string;
+
+  baseline_start: string;
+  baseline_end: string;
+  baseline_requests: number;
+  baseline_cost_micro: number;
+  baseline_cost_per_1k_micro: number;
+
+  observed_start?: string;
+  observed_end?: string;
+  observed_requests?: number;
+  observed_cost_micro?: number;
+  observed_cost_per_1k_micro?: number;
+
+  expected_savings_micro: number;
+  actual_savings_micro?: number;
+  expected_pct: number;
+  actual_pct?: number;
+
+  verdict?: Verdict;
+  verdict_reason?: string;
+
+  status: MeasurementStatus;
+  finalized_at?: string;
 }
 
 // The gateway itself (not the control API) — what applications actually
