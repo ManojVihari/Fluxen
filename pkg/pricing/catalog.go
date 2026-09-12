@@ -94,6 +94,17 @@ func (c *Catalog) Lookup(model string) (ModelPrice, bool) {
 	return p, ok
 }
 
+// AllModels returns every catalog entry, sorted by id — Settings >
+// Pricing's read-only catalog view (Part I.6).
+func (c *Catalog) AllModels() []ModelPrice {
+	out := make([]ModelPrice, 0, len(c.byModel))
+	for _, p := range c.byModel {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 // DowngradeCandidates returns every catalog entry that declares model as
 // one of its downgrade_candidates_for — the Model Cost detector's entire
 // candidate set for that model (Part G.3.1), sorted by id for a

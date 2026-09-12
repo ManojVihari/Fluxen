@@ -143,6 +143,53 @@ export const api = {
     get<Measurement>(`/api/v1/opportunities/${opportunityId}/measurement`),
   revertMeasurement: (id: string, body: { confirm: boolean; note?: string }) =>
     post<PolicyResponse>(`/api/v1/measurements/${id}/revert`, body),
+
+  // --- Phase 7 additions ---
+  overview: (range: RangeValue) => get<OverviewResponse>(`/api/v1/overview?range=${range}`),
+  overviewTimeseries: (range: RangeValue) =>
+    get<OverviewDailyPoint[]>(`/api/v1/overview/timeseries?range=${range}`),
+
+  applicationScore: (appId: string) => get<ScoreResponse>(`/api/v1/applications/${appId}/score`),
+  applicationScoreHistory: (appId: string, range: RangeValue) =>
+    get<ScoreResponse[]>(`/api/v1/applications/${appId}/score/history?range=${range}`),
+
+  listRequests: (params?: {
+    appId?: string;
+    model?: string;
+    status?: string;
+    cache?: string;
+    cursor?: string;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.appId) q.set("app_id", params.appId);
+    if (params?.model) q.set("model", params.model);
+    if (params?.status) q.set("status", params.status);
+    if (params?.cache) q.set("cache", params.cache);
+    if (params?.cursor) q.set("cursor", params.cursor);
+    const qs = q.toString();
+    return get<RequestListResponse>(`/api/v1/requests${qs ? `?${qs}` : ""}`);
+  },
+  getRequest: (id: string) => get<RequestDetail>(`/api/v1/requests/${id}`),
+
+  // --- Settings (Part I.6) ---
+  listProviderCredentials: () => get<ProviderCredential[]>("/api/v1/providers/credentials"),
+  createProviderCredential: (body: CreateProviderCredentialRequest) =>
+    post<ProviderCredential>("/api/v1/providers/credentials", body),
+  revokeProviderCredential: (id: string) =>
+    post<ProviderCredential>(`/api/v1/providers/credentials/${id}/revoke`),
+  providerHealthCheck: (id: string) =>
+    post<{ status: string; error: string }>(`/api/v1/providers/${id}/health-check`),
+  listProviderModels: (provider: string) =>
+    get<{ ID: string }[]>(`/api/v1/providers/${provider}/models`),
+
+  getPricingCatalog: () => get<PricingCatalog>("/api/v1/pricing/catalog"),
+
+  getSettings: () => get<Settings>("/api/v1/settings"),
+  patchSettings: (body: Settings) => request<Settings>("/api/v1/settings", { method: "PATCH", body: JSON.stringify(body) }),
+
+  listUsers: () => get<User[]>("/api/v1/users"),
+  inviteUser: (body: { email: string; role: "owner" | "member" }) =>
+    post<InvitedUser>("/api/v1/users", body),
 };
 
 // Matches the ?range= values internal/api/timerange.go accepts.
@@ -415,6 +462,229 @@ export interface Measurement {
 
   status: MeasurementStatus;
   finalized_at?: string;
+}
+
+// --- Phase 7: repeated request / token efficiency / traffic anomaly
+// evidence (Part G.3.2-G.3.4), mirroring internal/detect's exported
+// shapes field-for-field. ---
+
+export interface TTLSweepRow {
+  ttl: string;
+  duplicate_hits: number;
+  savings_micro: number;
+}
+export interface DuplicateShape {
+  system_prompt_hash: string;
+  model: string;
+  input_tokens_p50: number;
+  count: number;
+}
+export interface RepeatedRequestEvidence {
+  total_requests: number;
+  duplicate_requests: number;
+  duplicate_rate: number;
+  ttl_sweep: TTLSweepRow[];
+  top_shapes: DuplicateShape[];
+  window_days: number;
+}
+export interface RepeatedRequestRecommendation {
+  action: string;
+  recommended_ttl_seconds: number;
+}
+
+export interface DailyTokenPoint {
+  day: string;
+  mean_tokens: number;
+}
+export interface TokenEfficiencyEvidence {
+  dimension: "input" | "output";
+  model: string;
+  baseline_mean_tokens: number;
+  current_mean_tokens: number;
+  drift_pct: number;
+  change_point_date?: string;
+  daily_sparkline: DailyTokenPoint[];
+  baseline_requests: number;
+  current_requests: number;
+}
+
+export interface AnomalyHourPoint {
+  bucket: string;
+  requests: number;
+  cost_micro: number;
+  total_tokens: number;
+  error_rate: number;
+  z_score: number;
+}
+export interface TrafficAnomalyEvidence {
+  metric: "requests" | "cost" | "tokens" | "error_rate";
+  peak_z_score: number;
+  baseline_median: number;
+  peak_value: number;
+  error_rate_spike_pct: number;
+  hourly_series: AnomalyHourPoint[];
+}
+
+// --- Phase 7: Efficiency Score (internal/score) ---
+
+export interface ScoreResponse {
+  day: string;
+  status: "ok" | "insufficient_data";
+  overall: number;
+  model_efficiency: number;
+  token_efficiency: number;
+  cache_efficiency: number;
+  traffic_stability: number;
+  cost_efficiency: number;
+}
+
+// --- Phase 7: Overview (Part I.3) ---
+
+export interface OverviewProviderMix {
+  provider: string;
+  cost_micro: number;
+  requests: number;
+}
+export interface OverviewTopApplication {
+  app_id: string;
+  slug: string;
+  name: string;
+  cost_micro: number;
+  prior_cost_micro: number;
+  efficiency_score: number | null;
+  open_opportunity_value_micro: number;
+}
+export interface OverviewOpportunityRow {
+  id: string;
+  app_id: string;
+  kind: string;
+  title: string;
+  savings_micro: number;
+  savings_pct: number;
+  confidence: "low" | "medium" | "high";
+  confidence_score: number;
+}
+export interface OverviewResponse {
+  range_start: string;
+  range_end: string;
+  requests: number;
+  errors: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_micro: number;
+  potential_savings_micro: number;
+  realized_savings_micro: number;
+  provider_mix: OverviewProviderMix[];
+  top_applications: OverviewTopApplication[];
+  opportunity_feed: OverviewOpportunityRow[];
+}
+export interface OverviewDailyPoint {
+  day: string;
+  cost_micro: number;
+  requests: number;
+}
+
+// --- Phase 7: Requests investigation (Part I.5) ---
+
+export interface RequestRow {
+  id: string;
+  app_id: string;
+  started_at: string;
+  duration_ms: number;
+  requested_model: string;
+  provider: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_micro: number;
+  cost_status: "known" | "unknown" | "local";
+  cache_status: "hit" | "miss" | "bypass" | "disabled";
+  status: string;
+  http_status: number | null;
+}
+export interface RequestListResponse {
+  requests: RequestRow[];
+  next_cursor: string;
+}
+export interface RequestDetail extends RequestRow {
+  ttft_ms: number | null;
+  endpoint: string;
+  protocol: string;
+  streamed: boolean;
+  route_reason: string;
+  route_variant: string | null;
+  policy_version: number;
+  cached_input_tokens: number;
+  usage_source: string;
+  cost_input_micro: number;
+  cost_output_micro: number;
+  pricing_version: string;
+  cache_saved_micro: number;
+  error_code: string | null;
+  error_message: string | null;
+  has_tools: boolean;
+  has_tool_calls: boolean;
+  has_images: boolean;
+  json_mode: boolean;
+  temperature: number | null;
+  max_tokens_req: number | null;
+  message_count: number | null;
+  request_body?: unknown;
+  response_body?: unknown;
+}
+
+// --- Phase 7: Settings (Part I.6) ---
+
+export interface ProviderCredential {
+  id: string;
+  provider: "openai" | "gemini" | "ollama";
+  base_url: string | null;
+  status: "active" | "revoked";
+  created_at: string;
+  revoked_at?: string;
+  last_health_check_at?: string;
+  last_health_check_status?: "ok" | "error";
+  last_health_check_error?: string;
+}
+export interface CreateProviderCredentialRequest {
+  provider: "openai" | "gemini" | "ollama";
+  api_key?: string;
+  base_url?: string;
+}
+
+export interface PricingModel {
+  id: string;
+  provider: string;
+  input_per_mtok_micro: number;
+  output_per_mtok_micro: number;
+  context_window: number;
+  max_output: number;
+  capabilities: string[];
+  tier: string;
+  downgrade_candidates_for?: string[];
+}
+export interface PricingCatalog {
+  version: string;
+  models: PricingModel[];
+  ollama_note: string;
+}
+
+export interface Settings {
+  requests_retention_days: number;
+  body_retention_days: number;
+  body_capture_enabled: boolean;
+}
+
+export interface User {
+  id: string;
+  email: string;
+  role: "owner" | "member";
+  created_at: string;
+}
+export interface InvitedUser extends User {
+  temporary_password: string;
 }
 
 // The gateway itself (not the control API) — what applications actually

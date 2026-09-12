@@ -4,9 +4,9 @@
 # this file does not rewrite the cost of historical requests (Part H.2).
 #
 # Prices are in micro-USD per model, per million tokens
-# (1 USD = 1_000_000 micro-USD). Phase 1 only proxies OpenAI traffic, so
-# only OpenAI models are listed; Gemini and Ollama entries arrive in
-# Phase 7 alongside those providers.
+# (1 USD = 1_000_000 micro-USD). Ollama has no catalog entries by design
+# (Part D.1: no provider invoice, no GPU/electricity cost model — every
+# Ollama request gets CostStatus=CostLocal instead of a catalog lookup).
 #
 # context_window/max_output/capabilities/tier/downgrade_candidates_for
 # (Part H.1) are the Model Cost detector's only source of candidates —
@@ -57,3 +57,42 @@ models:
     capabilities: [tools, streaming]
     tier: economy
     downgrade_candidates_for: [gpt-4-turbo]
+  # Gemini entries (Phase 7). Public list pricing, approximated the same
+  # way the OpenAI rows above are (a flat per-model rate; Google's actual
+  # pricing tiers by prompt length past 128k tokens, which this catalog
+  # does not model, matching Part H.1's own scope).
+  - id: gemini-1.5-pro
+    provider: gemini
+    input_per_mtok_micro: 1250000
+    output_per_mtok_micro: 5000000
+    context_window: 2000000
+    max_output: 8192
+    capabilities: [tools, vision, json_schema, streaming]
+    tier: premium
+  - id: gemini-1.5-flash
+    provider: gemini
+    input_per_mtok_micro: 75000
+    output_per_mtok_micro: 300000
+    context_window: 1000000
+    max_output: 8192
+    capabilities: [tools, vision, json_schema, streaming]
+    tier: economy
+    downgrade_candidates_for: [gemini-1.5-pro]
+  - id: gemini-1.5-flash-8b
+    provider: gemini
+    input_per_mtok_micro: 37500
+    output_per_mtok_micro: 150000
+    context_window: 1000000
+    max_output: 8192
+    capabilities: [tools, vision, json_schema, streaming]
+    tier: economy
+    downgrade_candidates_for: [gemini-1.5-pro, gemini-1.5-flash]
+  - id: gemini-2.0-flash
+    provider: gemini
+    input_per_mtok_micro: 100000
+    output_per_mtok_micro: 400000
+    context_window: 1000000
+    max_output: 8192
+    capabilities: [tools, vision, json_schema, streaming]
+    tier: economy
+    downgrade_candidates_for: [gemini-1.5-pro]

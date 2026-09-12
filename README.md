@@ -6,10 +6,21 @@ Fluxen is a self-hosted AI traffic gateway and optimization platform. See:
 
 - [`Fluxen V1 — Product Requirements Document.md`](./Fluxen%20V1%20—%20Product%20Requirements%20Document.md) — what Fluxen is and why.
 - [`Fluxen V1 — Implementation Plan.md`](./Fluxen%20V1%20—%20Implementation%20Plan.md) — the developer-ready implementation specification and phased build plan. This is the primary engineering reference; read it before changing code.
+- [`docs/`](./docs/README.md) — quickstart, self-hosting guide, concepts, provider setup, and API reference for using an already-built Fluxen deployment (as opposed to the two documents above, which are for building it).
 
 ## Current status
 
-**Phase 0 — Foundation**, **Phase 1 — First AI Request**, **Phase 2 — First Understanding**, **Phase 3 — ⭐ Aha Moment (Opportunity Discovery)**, **Phase 4 — Prove It (Simulate)**, **Phase 5 — Control It (Apply)**, and **Phase 6 — Measure It** are implemented.
+**Phase 0** through **Phase 6** are implemented (see git history / earlier README revisions for their individual "what's new" notes). **Phase 7 — Complete V1 Product** is substantially implemented:
+
+- The three remaining detectors (repeated request, token efficiency, traffic anomaly) alongside Model Cost, all four wired into one `detect.run` job.
+- The Efficiency Score (`internal/score`): five weighted components, computed daily, reusing the same detector logic the Opportunities tab shows.
+- Gemini and Ollama providers, fully translated in both directions (including streaming), behind the same single OpenAI-compatible gateway endpoint as OpenAI — routing resolved per-model against the pricing catalog, with Ollama as the catch-all for uncataloged models when configured.
+- Org-managed, AES-256-GCM-encrypted provider credentials (Settings → Providers) with health checks — the real replacement for the Phase 1-6 env-var credentials, which still work as a fallback.
+- The Overview page (org-wide entry point), the Requests investigation screen (cursor-paginated, with a detail drawer), and the Policies matrix (cross-app view) — all backed by new read APIs.
+- Settings screens: Providers, Pricing (read-only catalog view), Users (list + invite via a one-time generated password — V1 has no email infrastructure), and Retention (the three retention knobs, enforced daily by a new `retention.enforce` job).
+- The public marketing website (`web/apps/website`): Home, Product, How it Works, Why Fluxen, Providers, Pricing, Docs.
+
+Known gaps, flagged rather than silently skipped: per-org editable pricing overrides (named in the PRD but never specified anywhere — no data model, no rule for how it interacts with pricing-history immutability); a generated OpenAPI spec (the API reference in `docs/` is hand-maintained instead); production Docker hardening, a dedicated security pass, load testing, and a scripted E2E suite are still open (next up).
 
 - Repository structure, local dev loop, Postgres + Redis connectivity with migrations, structured logging, health/readiness/metrics endpoints.
 - A control API (`/api/v1/...`) for first-run setup, login/logout, applications, and API keys.
@@ -23,7 +34,7 @@ Fluxen is a self-hosted AI traffic gateway and optimization platform. See:
 - `fluxenctl seed --demo` — seeds a demo organization, a `document-ai` application, ~30 days of realistic synthetic traffic, and immediately runs the Model Cost detector against it, so a fresh install shows a real opportunity — and a runnable simulation — without waiting.
 - `fluxenctl measure check --fast-forward=<duration>` — runs interim/final measurement checks as if that much time had passed since apply, so a demo or test doesn't need to wait two real weeks.
 
-Not yet implemented (later phases, per the spec): the other three detectors (repeated request, token efficiency, traffic anomaly), efficiency score, Overview page, Requests investigation screen (Phase 7), and Gemini/Ollama (Phase 7).
+(All of the above is Phase 0-6; see "Current status" above for what Phase 7 added on top of it.)
 
 ### What's new in Phase 2
 
@@ -98,7 +109,7 @@ Phase 6's goal is: close the loop between what Fluxen estimated and what actuall
 
 ## Quickstart (Docker Compose)
 
-Requires Docker and Docker Compose.
+Requires Docker and Docker Compose. No `.env` file, no exported variables, no manual key generation — every setting below has a working default.
 
 ```bash
 docker compose up --build
@@ -154,12 +165,7 @@ This creates an organization (owner: `owner@example.com` / `supersecret123`, onl
 
 5. Open the application in the dashboard — usage, cost, and model mix appear within a few minutes (the rollup job that powers Application Detail runs every 5 minutes; a fresh request is visible sooner via the API, `GET /api/v1/applications/{id}/summary`, but the dashboard reads the rolled-up view).
 
-For the gateway to actually reach OpenAI, set `OPENAI_API_KEY` before starting the stack — without it, the gateway still runs, but every chat request returns `503 no_provider_credential`.
-
-```bash
-export OPENAI_API_KEY=sk-...
-docker compose up --build
-```
+For the gateway to actually reach a provider, add a credential from **Settings → Providers** in the dashboard (OpenAI, Gemini, or a self-hosted Ollama endpoint) — it's encrypted at rest with a key Fluxen generates for itself on first boot, no `FLUXEN_ENCRYPTION_KEY` required. Without a credential, the gateway still runs, but every chat request returns `503 no_provider_credential` until one exists. (An `OPENAI_API_KEY` env var works too, as a deployment-wide alternative — see [`docs/self-hosting.md`](docs/self-hosting.md).)
 
 ## Verifying this build
 
@@ -317,7 +323,8 @@ See [`.env.example`](./.env.example) for the full list. The two that matter for 
 |---|---|---|
 | `DATABASE_URL` | yes | Postgres connection string |
 | `REDIS_URL` | yes | Redis connection string |
-| `OPENAI_API_KEY` | no | The gateway's OpenAI credential — without it, `/v1/chat/completions` returns `503` until set. (Phase 1 uses one deployment-wide key; per-application, UI-managed provider credentials arrive in a later phase.) |
+| `OPENAI_API_KEY` | no | A deployment-wide OpenAI credential, as an alternative to adding one from Settings → Providers in the dashboard. Without either, `/v1/chat/completions` returns `503 no_provider_credential`. |
+| `FLUXEN_ENCRYPTION_KEY` | no | Overrides the encryption key Fluxen otherwise generates and persists itself on first boot (see `FLUXEN_DATA_DIR`) for Settings → Providers' stored credentials. |
 | `FLUXEN_DASHBOARD_ORIGIN` | no | Browser origin the control API allows via CORS (default `http://localhost:3000`) |
 
 ## API surface
@@ -373,24 +380,31 @@ internal/store       Postgres access: applications, api_keys, users, organizatio
 internal/gateway     the OpenAI-compatible ingress: auth, policy, routing, cache, guard, pipeline, streaming
 internal/ingest      async bounded queue + batch writer from gateway to Postgres
 internal/rollup      idempotent hourly/daily aggregation of requests into the rollup tables
-internal/detect      the Model Cost detector, suppression/ranking rules, and the Postgres-touching Runner
-internal/sim         the simulation engine: replay, model-mix/exact-caching/budget scenarios, the release-blocking self-check
-internal/policy      the policy store, versioned history, in-process snapshot cache, and the Apply/Revert transactions
+internal/detect       all four detectors (model cost, repeated request, token efficiency, traffic anomaly), suppression/ranking rules, and the Postgres-touching Runner
+internal/sim          the simulation engine: replay, model-mix/exact-caching/budget scenarios, the release-blocking self-check
+internal/score        the Efficiency Score: five weighted components reusing the detectors' own logic, daily snapshot Runner
+internal/policy       the policy store, versioned history, in-process snapshot cache, and the Apply/Revert transactions
 internal/measure     baseline freeze, cost-per-1k comparison, the five-way verdict, and the interim/final check Runner
 internal/guard       live rate-limit and budget enforcement (Redis-backed, fail-open)
 internal/cache       live exact-match response caching (Redis-backed, SSE replay for streamed hits)
+internal/credentials encrypt-on-write, decrypt-only-internally provider credential service + in-process snapshot cache (mirrors internal/policy's)
+internal/crypto      AES-256-GCM encryption for credentials at rest
+internal/retention   daily enforcement of the requests/body/opportunity retention windows
 internal/worker      the in-process background job scheduler
 internal/api         the control-plane HTTP API the dashboard talks to
 internal/health      dependency health checks (/readyz)
 internal/observability  structured logging, Prometheus metrics
 pkg/types            provider-neutral request/response/usage types, exact-match cache key
 pkg/providers/openai OpenAI adapter (translation, streaming, errors)
+pkg/providers/gemini  Gemini adapter (full bidirectional translation, streaming, safety-block handling)
+pkg/providers/ollama  Ollama adapter (native /api/chat + /api/tags, NDJSON streaming translation)
 pkg/pricing          embedded pricing catalog + cost calculation
 pkg/policy           the PolicyDocument schema + pure Evaluate/EvaluateBudget (no I/O — shared by gateway and simulation)
 tools/trafficgen     synthetic multi-day, multi-model traffic generator (used by `fluxenctl seed`)
 db/migrations/       goose SQL migrations, embedded into the fluxen binary
-web/apps/dashboard   the authenticated product (Next.js)
-web/apps/website     the public marketing/docs site (Next.js, statically exported)
+docs/                self-hosting guide, quickstart, concepts, provider setup, hand-maintained API reference
+web/apps/dashboard   the authenticated product (Next.js): Overview, Applications, Application Detail, Optimizations, Policies matrix, Requests, Settings
+web/apps/website     the public marketing site (Next.js, statically exported): Home, Product, How it Works, Why Fluxen, Providers, Pricing, Docs
 deploy/              Dockerfiles used by docker-compose.yml
 ```
 

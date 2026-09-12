@@ -49,28 +49,31 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 }
 
 // setSessionCookie writes the session cookie for a newly-created session.
-func setSessionCookie(w http.ResponseWriter, token string) {
+// Secure follows s.CookieSecure — false by default so local/dev/default-
+// compose deployments over plain HTTP work out of the box, but an
+// operator who terminates TLS in front of Fluxen should set
+// FLUXEN_COOKIE_SECURE=true (see docs/self-hosting.md) so the session
+// cookie is never sent over a downgraded connection.
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     auth.SessionCookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		// Secure is deliberately left false so local/dev/default-compose
-		// deployments over plain HTTP work out of the box. Requiring TLS
-		// termination in front of Fluxen for a secure cookie is a Phase 9
-		// security-hardening concern (Part L Phase 9), not a Phase 1 one.
-		MaxAge: int(auth.SessionTTL.Seconds()),
+		Secure:   s.CookieSecure,
+		MaxAge:   int(auth.SessionTTL.Seconds()),
 	})
 }
 
-func clearSessionCookie(w http.ResponseWriter) {
+func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     auth.SessionCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   s.CookieSecure,
 		MaxAge:   -1,
 		Expires:  time.Unix(0, 0),
 	})

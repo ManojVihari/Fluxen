@@ -21,8 +21,11 @@ services:
       # already running on the host or in another compose project.
       # Container-to-container traffic (the fluxen service) always uses
       # the internal port 5432 via the "postgres" hostname, unaffected by
-      # this mapping.
-      - "5433:5432"
+      # this mapping. Bound to 127.0.0.1 only — still reachable from the
+      # host machine for local debugging (psql, a GUI client) but never
+      # exposed to the network a production host sits on; Postgres has no
+      # password worth defending on the wire otherwise.
+      - "127.0.0.1:5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U fluxen -d fluxen"]
       interval: 5s
@@ -34,7 +37,10 @@ services:
     volumes:
       - fluxen-redis-data:/data
     ports:
-      - "6379:6379"
+      # Bound to 127.0.0.1 only — see the postgres service's port comment
+      # above for why. Redis here has no password by default; it must
+      # never be reachable from outside the host.
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -51,17 +57,33 @@ services:
       LOG_LEVEL: info
       DATABASE_URL: "postgres://fluxen:fluxen@postgres:5432/fluxen?sslmode=disable"
       REDIS_URL: "redis://redis:6379/0"
-      # The gateway's deployment-wide OpenAI credential (Phase 1 — see
-      # internal/config's OpenAIAPIKey doc comment for why this is an env
-      # var rather than a UI-managed credential in V1). Set it in your
-      # shell or a .env file next to this compose file before running
-      # `docker compose up`; the gateway boots fine without it and simply
-      # returns 503 no_provider_credential until it's set.
+      # None of the variables below need to be set for `docker compose up`
+      # to produce a fully working deployment. Every provider credential
+      # (OpenAI, Gemini, Ollama, ...) is added from Settings > Providers in
+      # the dashboard after first login, encrypted at rest with a key
+      # cmd/fluxen generates itself on first boot and persists to the
+      # fluxen-data volume below (see cmd/fluxen/encryption.go). These env
+      # vars remain as an optional advanced path — e.g. an operator who
+      # wants to inject a deployment-wide OpenAI key or manage the
+      # encryption key themselves via a secrets manager instead of letting
+      # Fluxen generate one.
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       # Only useful for pointing the gateway at a mock server in local
       # development/testing; leave unset for a real deployment.
       FLUXEN_OPENAI_BASE_URL: "${FLUXEN_OPENAI_BASE_URL:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-}"
+      # Optional override — omit this and Fluxen generates and persists its
+      # own key to /data on first boot. Set it only if you want to manage
+      # the encryption key yourself (e.g. `openssl rand -base64 32`).
+      FLUXEN_ENCRYPTION_KEY: "${FLUXEN_ENCRYPTION_KEY:-}"
       FLUXEN_DASHBOARD_ORIGIN: "http://localhost:3000"
+      # Set to "true" once you put TLS in front of Fluxen (a reverse
+      # proxy terminating HTTPS) so the session cookie is marked Secure.
+      # Left false by default so the plain-HTTP default deployment works.
+      FLUXEN_COOKIE_SECURE: "${FLUXEN_COOKIE_SECURE:-}"
+    volumes:
+      - fluxen-data:/data
     ports:
       - "8080:8080"
     depends_on:
@@ -84,3 +106,4 @@ services:
 volumes:
   fluxen-postgres-data:
   fluxen-redis-data:
+  fluxen-data:

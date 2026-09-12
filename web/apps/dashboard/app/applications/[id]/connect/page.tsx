@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { api, ApiError, GATEWAY_BASE_URL, type ApiKey } from "@/lib/api";
+import { api, ApiError, GATEWAY_BASE_URL, type ApiKey, type ProviderCredential } from "@/lib/api";
 import { Button, CodeBlock, ErrorBanner } from "@/components/ui";
+import { PROVIDERS, ProviderRow } from "@/components/provider-setup";
 
 // The connect screen: issue an API key, show it exactly once, and give the
 // user copy-paste snippets to point an OpenAI-compatible client at Fluxen
@@ -18,6 +19,18 @@ export default function ConnectPage() {
   const [revoked, setRevoked] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [issuing, setIssuing] = useState(false);
+  const [creds, setCreds] = useState<ProviderCredential[] | null>(null);
+
+  function loadCreds() {
+    api.listProviderCredentials().then(setCreds).catch(() => {});
+  }
+
+  useEffect(() => {
+    loadCreds();
+  }, []);
+
+  const activeCreds = creds ?? [];
+  const providerConfigured = activeCreds.some((c) => c.status === "active");
 
   async function handleGenerateKey() {
     setError(null);
@@ -53,6 +66,24 @@ export default function ConnectPage() {
       </p>
 
       <ErrorBanner message={error} />
+
+      {creds !== null && !providerConfigured && (
+        <div className="mb-6 space-y-3">
+          <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            No provider is configured for this organization yet — requests through this key will
+            fail with <code className="rounded bg-amber-100 px-1">503 no_provider_credential</code>{" "}
+            until one is added. Add one below, or later from Settings → Providers.
+          </div>
+          <div className="space-y-3">
+            {PROVIDERS.map((p) => {
+              const cred = activeCreds.find((c) => c.status === "active" && c.provider === p.value);
+              return (
+                <ProviderRow key={p.value} provider={p.value} label={p.label} note={p.note} credential={cred} onChange={loadCreds} />
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {!key && (
         <Button onClick={handleGenerateKey} disabled={issuing}>

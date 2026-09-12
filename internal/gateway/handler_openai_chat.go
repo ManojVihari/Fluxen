@@ -58,11 +58,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.Credential.APIKey == "" {
-		writeError(w, r, http.StatusServiceUnavailable, "no_provider_credential", "No OpenAI API key is configured for this Fluxen deployment.")
-		return
-	}
-
 	rb := &recordBuilder{
 		requestID:      RequestIDFromContext(r.Context()),
 		app:            app,
@@ -73,6 +68,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		maxTokens:      req.MaxTokens,
 		workload:       types.ExtractWorkloadFeatures(req),
 		routeReason:    "direct",
+	}
+	// Part G.6's opt-in body capture (Settings > Retention, off by
+	// default) — checked once here, before routing/cache, so every exit
+	// path below shares the same answer for this request.
+	if s.RetentionSettings != nil {
+		rb.captureEnabled = s.RetentionSettings.BodyCaptureEnabled(r.Context(), app.OrgID)
+		if rb.captureEnabled {
+			rb.requestBody = body
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.Timeout)
@@ -94,6 +98,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Model = decision.Model // actually route the call to the decided model
+
+	// Resolve which of the three providers actually serves the routed
+	// model (Part A.3) now that routing is final, so accounting and the
+	// no-credential check both reflect the model that will really be
+	// called, not whatever Server.Provider happens to default to.
+	provider, cred, providerName := s.resolveProvider(ctx, app.OrgID, req.Model)
+	rb.provider = providerName
+	if !credentialConfigured(providerName, provider, cred) {
+		s.emit(rb.finalizeBlocked(http.StatusServiceUnavailable, "no_provider_credential", "No credential is configured for this provider."))
+		writeError(w, r, http.StatusServiceUnavailable, "no_provider_credential", "No "+providerName+" credential is configured for this Fluxen deployment.")
+		return
+	}
 
 	if s.RateLimiter != nil && !s.RateLimiter.Allow(ctx, app.AppID, doc.RateLimit) {
 		s.emit(rb.finalizeBlocked(http.StatusTooManyRequests, "rate_limited", "Rate limit exceeded."))
@@ -122,10 +138,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Stream {
-		s.handleChatStream(ctx, w, r, req, rb)
+		s.handleChatStream(ctx, w, r, req, rb, provider, cred)
 		return
 	}
-	s.handleChatUnary(ctx, w, r, req, rb)
+	s.handleChatUnary(ctx, w, r, req, rb, provider, cred)
 }
 
 // loadPolicy fetches the application's current policy and version,
@@ -143,14 +159,14 @@ func (s *Server) loadPolicy(ctx context.Context, appID types.AppID) (*corepolicy
 	return &doc, version
 }
 
-func (s *Server) handleChatUnary(ctx context.Context, w http.ResponseWriter, r *http.Request, req *types.CanonicalRequest, rb *recordBuilder) {
-	resp, err := s.Provider.Chat(ctx, req, s.Credential)
+func (s *Server) handleChatUnary(ctx context.Context, w http.ResponseWriter, r *http.Request, req *types.CanonicalRequest, rb *recordBuilder, provider providers.Provider, cred providers.Credential) {
+	resp, err := provider.Chat(ctx, req, cred)
 	if err != nil {
 		s.handleProviderError(w, r, rb, err)
 		return
 	}
 
-	rec := rb.finalize(s.Catalog, resp.Usage, resp.Model, "ok", http.StatusOK, "", "", nil)
+	rec := rb.finalize(s.Catalog, resp.Usage, resp.Model, "ok", http.StatusOK, "", "", nil, resp.Raw)
 	s.emit(rec)
 	s.afterSuccess(ctx, rb, rec, resp.Raw, nil)
 
@@ -231,20 +247,20 @@ func (s *Server) serveFromCache(w http.ResponseWriter, r *http.Request, rb *reco
 func (s *Server) handleProviderError(w http.ResponseWriter, r *http.Request, rb *recordBuilder, err error) {
 	var upstreamErr *providers.UpstreamError
 	if errors.As(err, &upstreamErr) {
-		rec := rb.finalize(s.Catalog, types.ResponseUsage{}, rb.requestedModel, "provider_error", upstreamErr.StatusCode, "provider_error", err.Error(), nil)
+		rec := rb.finalize(s.Catalog, types.ResponseUsage{}, rb.requestedModel, "provider_error", upstreamErr.StatusCode, "provider_error", err.Error(), nil, upstreamErr.Body)
 		s.emit(rec)
 		relayUpstreamError(w, r, upstreamErr.StatusCode, upstreamErr.Body)
 		return
 	}
 
 	if errors.Is(err, context.DeadlineExceeded) {
-		rec := rb.finalize(s.Catalog, types.ResponseUsage{}, rb.requestedModel, "timeout", http.StatusGatewayTimeout, "upstream_timeout", err.Error(), nil)
+		rec := rb.finalize(s.Catalog, types.ResponseUsage{}, rb.requestedModel, "timeout", http.StatusGatewayTimeout, "upstream_timeout", err.Error(), nil, nil)
 		s.emit(rec)
 		writeError(w, r, http.StatusGatewayTimeout, "upstream_timeout", "The upstream provider did not respond in time.")
 		return
 	}
 
-	rec := rb.finalize(s.Catalog, types.ResponseUsage{}, rb.requestedModel, "provider_error", http.StatusBadGateway, "provider_unavailable", err.Error(), nil)
+	rec := rb.finalize(s.Catalog, types.ResponseUsage{}, rb.requestedModel, "provider_error", http.StatusBadGateway, "provider_unavailable", err.Error(), nil, nil)
 	s.emit(rec)
 	writeError(w, r, http.StatusBadGateway, "provider_unavailable", "Failed to reach the upstream provider.")
 }

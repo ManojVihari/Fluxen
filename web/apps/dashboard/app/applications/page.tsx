@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { api, ApiError, type Application, type ApplicationSummary } from "@/lib/api";
+import { api, ApiError, type Application, type ApplicationSummary, type ProviderCredential } from "@/lib/api";
 import { Button, ErrorBanner } from "@/components/ui";
+import { TopNav } from "@/components/top-nav";
 import { formatMoney, formatNumber } from "@/lib/format";
 
 type Row = Application & { summary?: ApplicationSummary };
@@ -16,10 +17,21 @@ type Row = Application & { summary?: ApplicationSummary };
 export default function ApplicationsPage() {
   const router = useRouter();
   const [rows, setRows] = useState<Row[] | null>(null);
+  const [creds, setCreds] = useState<ProviderCredential[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+
+    api
+      .listProviderCredentials()
+      .then((c) => {
+        if (!cancelled) setCreds(c);
+      })
+      .catch(() => {
+        // Non-fatal — the nudge banner just won't render. The page's own
+        // 401 handling below already covers session expiry.
+      });
 
     api
       .listApplications()
@@ -58,35 +70,32 @@ export default function ApplicationsPage() {
     };
   }, [router]);
 
-  async function handleLogout() {
-    try {
-      await api.logout();
-    } finally {
-      router.replace("/login");
-    }
-  }
-
   return (
-    <main className="mx-auto max-w-3xl p-8">
+    <>
+      <TopNav />
+      <main className="mx-auto max-w-3xl p-8">
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-slate-900">Applications</h1>
           <p className="text-sm text-slate-500">The unit of optimization in Fluxen.</p>
         </div>
-        <div className="flex gap-2">
-          <Link href="/optimizations">
-            <Button variant="secondary">Optimizations</Button>
-          </Link>
-          <Link href="/applications/new">
-            <Button>New application</Button>
-          </Link>
-          <Button variant="secondary" onClick={handleLogout}>
-            Log out
-          </Button>
-        </div>
+        <Link href="/applications/new">
+          <Button>New application</Button>
+        </Link>
       </div>
 
       <ErrorBanner message={error} />
+
+      {creds !== null && !creds.some((c) => c.status === "active") && (
+        <div className="mb-6 flex items-center justify-between rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+          <p className="text-sm text-amber-800">
+            No provider is configured yet — requests will fail until you add one.
+          </p>
+          <Link href="/onboarding">
+            <Button variant="secondary">Finish setup</Button>
+          </Link>
+        </div>
+      )}
 
       {rows === null && !error && <p className="text-sm text-slate-500">Loading…</p>}
 
@@ -141,6 +150,7 @@ export default function ApplicationsPage() {
           </table>
         </div>
       )}
-    </main>
+      </main>
+    </>
   );
 }

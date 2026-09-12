@@ -112,6 +112,7 @@ func (o *Opportunities) UpsertOpen(ctx context.Context, in Opportunity) (Opportu
 		)
 		ON CONFLICT (app_id, fingerprint) WHERE status IN ('open', 'reviewed', 'simulated')
 		DO UPDATE SET
+			severity = EXCLUDED.severity,
 			title = EXCLUDED.title, summary = EXCLUDED.summary,
 			window_start = EXCLUDED.window_start, window_end = EXCLUDED.window_end,
 			sample_requests = EXCLUDED.sample_requests,

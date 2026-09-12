@@ -26,6 +26,21 @@ type recordBuilder struct {
 	maxTokens      *int
 	workload       types.WorkloadFeatures
 	cacheKey       []byte
+	// provider is the resolved provider name ("openai"/"gemini"/"ollama")
+	// serving this request — set once routing decides the final model.
+	// Defaults to "openai" so a caller that never sets it (every pre-
+	// Phase-7 test) keeps recording "openai", unchanged.
+	provider string
+	// captureEnabled/requestBody gate and carry Part G.6's opt-in body
+	// capture (Settings > Retention, off by default). requestBody is the
+	// exact client request bytes, set by the handler right after it reads
+	// the body. finalize's own responseBody parameter carries the other
+	// half — the unary path has resp.Raw available; the streaming path
+	// always passes nil (a documented gap: SSE bytes aren't valid JSON
+	// for the jsonb response_body column). Neither is ever set unless
+	// captureEnabled is true.
+	captureEnabled bool
+	requestBody    []byte
 
 	routeReason   string
 	routeVariant  string
@@ -45,13 +60,25 @@ type recordBuilder struct {
 // timeout, client abort, and now also blocked-by-policy — funnels
 // through one of these two functions so cost/status accounting never
 // drifts between the streaming and non-streaming code paths.
-func (b *recordBuilder) finalize(catalog *pricing.Catalog, usage types.ResponseUsage, servedModel, status string, httpStatus int, errCode, errMsg string, ttft *int) types.UsageRecord {
-	costInput, costOutput, costTotal, costStatus := pricing.Calculate(catalog, servedModel, usage)
+func (b *recordBuilder) finalize(catalog *pricing.Catalog, usage types.ResponseUsage, servedModel, status string, httpStatus int, errCode, errMsg string, ttft *int, responseBody []byte) types.UsageRecord {
+	var costInput, costOutput, costTotal types.Money
+	var costStatus types.CostStatus
+	if b.provider == "ollama" {
+		// Part D.1 (frozen decision): Ollama has no provider invoice and
+		// V1 builds no GPU/electricity cost model — every Ollama request
+		// is CostLocal/zero, never priced against the catalog (which has
+		// no Ollama entries at all) and never CostUnknown either, since
+		// "unknown" would wrongly suggest a price that simply hasn't been
+		// looked up yet.
+		costStatus = types.CostLocal
+	} else {
+		costInput, costOutput, costTotal, costStatus = pricing.Calculate(catalog, servedModel, usage)
+	}
 	cacheStatus := b.cacheStatus
 	if cacheStatus == "" {
 		cacheStatus = "disabled"
 	}
-	return b.record(usage, servedModel, status, httpStatus, errCode, errMsg, ttft, costInput, costOutput, costTotal, costStatus, catalog.Version, cacheStatus, 0)
+	return b.record(usage, servedModel, status, httpStatus, errCode, errMsg, ttft, costInput, costOutput, costTotal, costStatus, catalog.Version, cacheStatus, 0, responseBody)
 }
 
 // finalizeBlocked builds the UsageRecord for a request policy blocked
@@ -59,7 +86,7 @@ func (b *recordBuilder) finalize(catalog *pricing.Catalog, usage types.ResponseU
 // budget) — Part E.1's status enum already includes "blocked" for
 // exactly this, and cost is always zero since nothing was called.
 func (b *recordBuilder) finalizeBlocked(httpStatus int, errCode, errMsg string) types.UsageRecord {
-	return b.record(types.ResponseUsage{}, b.requestedModel, "blocked", httpStatus, errCode, errMsg, nil, 0, 0, 0, types.CostKnown, "", "bypass", 0)
+	return b.record(types.ResponseUsage{}, b.requestedModel, "blocked", httpStatus, errCode, errMsg, nil, 0, 0, 0, types.CostKnown, "", "bypass", 0, nil)
 }
 
 // finalizeCacheHit builds the UsageRecord for a request served entirely
@@ -68,11 +95,26 @@ func (b *recordBuilder) finalizeBlocked(httpStatus int, errCode, errMsg string) 
 // cost — Part E.1's cache_saved_micro is exactly this figure, the only
 // place a cache hit's value shows up numerically.
 func (b *recordBuilder) finalizeCacheHit(usage types.ResponseUsage, servedModel string, ttft *int, savedCostMicro int64) types.UsageRecord {
-	return b.record(usage, servedModel, "ok", 200, "", "", ttft, 0, 0, 0, types.CostKnown, "", "hit", savedCostMicro)
+	// A cache hit's body was already captured (if capture was on) the
+	// first time this exact request was served — replaying it here would
+	// just duplicate the same bytes under a new request id, so this exit
+	// path never sets request/response body regardless of the setting.
+	return b.record(usage, servedModel, "ok", 200, "", "", ttft, 0, 0, 0, types.CostKnown, "", "hit", savedCostMicro, nil)
 }
 
-func (b *recordBuilder) record(usage types.ResponseUsage, servedModel, status string, httpStatus int, errCode, errMsg string, ttft *int, costInput, costOutput, costTotal types.Money, costStatus types.CostStatus, pricingVersion, cacheStatus string, cacheSavedMicro int64) types.UsageRecord {
+func (b *recordBuilder) record(usage types.ResponseUsage, servedModel, status string, httpStatus int, errCode, errMsg string, ttft *int, costInput, costOutput, costTotal types.Money, costStatus types.CostStatus, pricingVersion, cacheStatus string, cacheSavedMicro int64, responseBody []byte) types.UsageRecord {
 	durationMS := int(time.Since(b.startedAt) / time.Millisecond)
+
+	provider := b.provider
+	if provider == "" {
+		provider = "openai"
+	}
+
+	var capturedRequestBody, capturedResponseBody []byte
+	if b.captureEnabled {
+		capturedRequestBody = b.requestBody
+		capturedResponseBody = responseBody
+	}
 
 	return types.UsageRecord{
 		ID:             b.requestID,
@@ -86,7 +128,7 @@ func (b *recordBuilder) record(usage types.ResponseUsage, servedModel, status st
 		Protocol:       "openai",
 		Streamed:       b.streamed,
 		RequestedModel: b.requestedModel,
-		Provider:       "openai",
+		Provider:       provider,
 		Model:          servedModel,
 		RouteReason:    b.routeReason,
 		RouteVariant:   b.routeVariant,
@@ -120,6 +162,9 @@ func (b *recordBuilder) record(usage types.ResponseUsage, servedModel, status st
 
 		Temperature:  b.temperature,
 		MaxTokensReq: b.maxTokens,
+
+		RequestBody:  capturedRequestBody,
+		ResponseBody: capturedResponseBody,
 
 		WorkloadFeatures: b.workload,
 	}

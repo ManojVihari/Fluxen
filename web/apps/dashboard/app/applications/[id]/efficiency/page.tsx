@@ -1,28 +1,35 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { api, ApiError, type Opportunity } from "@/lib/api";
-import { Badge, EmptyState, ErrorBanner } from "@/components/ui";
-import { formatMoney, formatPercent } from "@/lib/format";
+import { api, ApiError, type ScoreResponse } from "@/lib/api";
+import { EmptyState, ErrorBanner } from "@/components/ui";
 
-// Application Detail's Efficiency tab — Phase 3 only wires the entry
-// point into Optimizations ("at minimum an opportunity count"); the full
-// efficiency score/ring is Part L Phase 7.
+const COMPONENTS: { key: keyof ScoreResponse; label: string }[] = [
+  { key: "model_efficiency", label: "Model efficiency" },
+  { key: "token_efficiency", label: "Token efficiency" },
+  { key: "cache_efficiency", label: "Cache efficiency" },
+  { key: "traffic_stability", label: "Traffic stability" },
+  { key: "cost_efficiency", label: "Cost efficiency" },
+];
+
+// Application Detail's Efficiency tab (Part I.1, PRD §20): the real
+// score ring and five-component breakdown from internal/score, now that
+// Phase 7 computes one. The opportunity list itself lives on the
+// Opportunities tab next to this one.
 export default function ApplicationEfficiencyPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
 
-  const [opportunities, setOpportunities] = useState<Opportunity[] | null>(null);
+  const [score, setScore] = useState<ScoreResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     api
-      .listOpportunities({ appId: params.id, status: "open" })
+      .applicationScore(params.id)
       .then((data) => {
-        if (!cancelled) setOpportunities(data);
+        if (!cancelled) setScore(data);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -30,7 +37,7 @@ export default function ApplicationEfficiencyPage() {
           router.replace("/login");
           return;
         }
-        setError(err instanceof ApiError ? err.message : "Failed to load opportunities.");
+        setError(err instanceof ApiError ? err.message : "Failed to load the efficiency score.");
       });
     return () => {
       cancelled = true;
@@ -43,41 +50,70 @@ export default function ApplicationEfficiencyPage() {
 
       <ErrorBanner message={error} />
 
-      {opportunities === null && !error && <p className="text-sm text-slate-500">Loading…</p>}
+      {!score && !error && <p className="text-sm text-slate-500">Loading…</p>}
 
-      {opportunities?.length === 0 && (
+      {score && score.status === "insufficient_data" && (
         <EmptyState>
-          No meaningful optimization found. Fluxen keeps watching this application's traffic.
+          Not enough data yet. Fluxen needs at least 1,000 requests and $5 of spend over the trailing 14
+          days before it will compute a score for this application.
         </EmptyState>
       )}
 
-      {opportunities && opportunities.length > 0 && (
-        <div className="space-y-2">
-          <p className="text-sm text-slate-600">
-            {opportunities.length} open {opportunities.length === 1 ? "opportunity" : "opportunities"} found.
-          </p>
-          {opportunities.map((o) => (
-            <Link
-              key={o.id}
-              href={`/optimizations/${o.id}`}
-              className="flex items-center justify-between gap-4 rounded-lg border border-slate-200 bg-white px-4 py-3 hover:bg-slate-50"
-            >
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-slate-900">{o.title}</p>
-                <p className="mt-0.5 text-xs text-slate-500">est. {formatPercent(o.savings_pct)} savings</p>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <Badge tone={o.confidence === "high" ? "good" : o.confidence === "low" ? "warn" : "neutral"}>
-                  {o.confidence}
-                </Badge>
-                <span className="text-sm font-medium text-slate-900">
-                  est. {formatMoney(o.savings_micro)}/mo
-                </span>
-              </div>
-            </Link>
-          ))}
+      {score && score.status === "ok" && (
+        <div className="flex flex-col items-start gap-8 sm:flex-row">
+          <ScoreRing value={score.overall} />
+          <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
+            {COMPONENTS.map((c) => (
+              <ComponentBar key={c.key} label={c.label} value={score[c.key] as number} />
+            ))}
+          </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function ScoreRing({ value }: { value: number }) {
+  const radius = 52;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - value / 100);
+  const tone = value >= 80 ? "stroke-emerald-500" : value >= 50 ? "stroke-amber-500" : "stroke-red-500";
+
+  return (
+    <div className="relative shrink-0" style={{ width: 140, height: 140 }}>
+      <svg width={140} height={140} viewBox="0 0 140 140">
+        <circle cx={70} cy={70} r={radius} strokeWidth={12} className="fill-none stroke-slate-100" />
+        <circle
+          cx={70}
+          cy={70}
+          r={radius}
+          strokeWidth={12}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          transform="rotate(-90 70 70)"
+          className={`fill-none transition-all ${tone}`}
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="text-3xl font-semibold text-slate-900">{value}</span>
+        <span className="text-xs text-slate-400">/ 100</span>
+      </div>
+    </div>
+  );
+}
+
+function ComponentBar({ label, value }: { label: string; value: number }) {
+  const tone = value >= 80 ? "bg-emerald-500" : value >= 50 ? "bg-amber-500" : "bg-red-500";
+  return (
+    <div>
+      <div className="mb-1 flex justify-between text-xs text-slate-600">
+        <span>{label}</span>
+        <span className="font-medium text-slate-900">{value}</span>
+      </div>
+      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+        <div className={`h-full rounded-full ${tone}`} style={{ width: `${Math.min(value, 100)}%` }} />
+      </div>
     </div>
   );
 }

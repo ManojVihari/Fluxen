@@ -23,7 +23,7 @@ export default function SetupPage() {
     setSubmitting(true);
     try {
       await api.setup({ org_name: orgName, email, password });
-      router.replace("/applications");
+      router.replace("/onboarding");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Setup failed. Please try again.");
     } finally {

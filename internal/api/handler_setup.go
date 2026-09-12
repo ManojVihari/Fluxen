@@ -93,7 +93,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	setSessionCookie(w, session.Token)
+	s.setSessionCookie(w, session.Token)
 
 	writeJSON(w, http.StatusCreated, setupResponse{OrgID: string(org.ID), Email: user.Email})
 }

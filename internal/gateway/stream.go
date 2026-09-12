@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"fluxen/pkg/providers"
 	"fluxen/pkg/types"
 )
 
@@ -17,7 +18,7 @@ import (
 // upstream. Since Phase 5, it also accumulates the raw chunks so a
 // successful response can populate the cache verbatim (internal/cache's
 // SSE replay needs the exact bytes, not a re-synthesized stream).
-func (s *Server) handleChatStream(ctx context.Context, w http.ResponseWriter, r *http.Request, req *types.CanonicalRequest, rb *recordBuilder) {
+func (s *Server) handleChatStream(ctx context.Context, w http.ResponseWriter, r *http.Request, req *types.CanonicalRequest, rb *recordBuilder, provider providers.Provider, cred providers.Credential) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		// Should be unreachable behind net/http's standard server, but
@@ -26,7 +27,7 @@ func (s *Server) handleChatStream(ctx context.Context, w http.ResponseWriter, r 
 		return
 	}
 
-	sr, err := s.Provider.ChatStream(ctx, req, s.Credential)
+	sr, err := provider.ChatStream(ctx, req, cred)
 	if err != nil {
 		s.handleProviderError(w, r, rb, err)
 		return
@@ -104,8 +105,10 @@ done:
 	// req.Model is the actually-routed model (Phase 5 may have rerouted
 	// it away from rb.requestedModel) — pricing must reflect what was
 	// really called, exactly like the non-streaming path already does
-	// via resp.Model.
-	rec := rb.finalize(s.Catalog, sr.Usage(), req.Model, status, httpStatus, errCode, errMsg, ttft)
+	// via resp.Model. responseBody is always nil here — a streamed
+	// response's SSE bytes aren't valid JSON for the jsonb response_body
+	// column (see recordBuilder's own doc comment).
+	rec := rb.finalize(s.Catalog, sr.Usage(), req.Model, status, httpStatus, errCode, errMsg, ttft, nil)
 	s.emit(rec)
 	if status == "ok" {
 		s.afterSuccess(ctx, rb, rec, nil, chunks)

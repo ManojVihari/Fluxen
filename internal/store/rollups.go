@@ -153,6 +153,95 @@ func (r *Rollups) ModelBreakdown(ctx context.Context, appID types.AppID, since, 
 	return out, nil
 }
 
+// DailyModelStat is one (day, model) point — the raw material the Token
+// Efficiency detector (Part G.3.3) segments into baseline/current
+// windows and diffs.
+type DailyModelStat struct {
+	Day             time.Time
+	Model           string
+	Requests        int64
+	InputTokensSum  int64
+	OutputTokensSum int64
+}
+
+// DailyModelStats returns one row per (day, model) in [since, until),
+// collapsed over provider/status — sourced from request_rollup_daily,
+// the same table Application Detail's Models tab reads, so a detector's
+// numbers are always cross-checkable against what the dashboard already
+// shows.
+func (r *Rollups) DailyModelStats(ctx context.Context, appID types.AppID, since, until time.Time) ([]DailyModelStat, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT day, model, sum(requests), sum(input_tokens), sum(output_tokens)
+		FROM request_rollup_daily
+		WHERE app_id = $1 AND day >= $2::date AND day < $3::date AND status = 'ok'
+		GROUP BY day, model
+		ORDER BY day, model
+	`, appID, since, until)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to load daily model stats: %w", err)
+	}
+	defer rows.Close()
+
+	var out []DailyModelStat
+	for rows.Next() {
+		var s DailyModelStat
+		if err := rows.Scan(&s.Day, &s.Model, &s.Requests, &s.InputTokensSum, &s.OutputTokensSum); err != nil {
+			return nil, fmt.Errorf("store: failed to scan daily model stat: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: failed to load daily model stats: %w", err)
+	}
+	return out, nil
+}
+
+// HourlyStat is one hourly bucket, collapsed over provider/model/status —
+// the raw material the Traffic Anomaly detector (Part G.3.4) computes its
+// seasonal-adjusted z-scores from.
+type HourlyStat struct {
+	Bucket      time.Time
+	Requests    int64
+	Errors      int64
+	TotalTokens int64
+	CostMicro   int64
+}
+
+// HourlyStats returns one row per hour bucket in [since, until), sourced
+// from request_rollup_hourly — the only table Part G.3.4's detector reads,
+// same as every other detector's convention of never scanning `requests`
+// directly for a window that can span weeks.
+func (r *Rollups) HourlyStats(ctx context.Context, appID types.AppID, since, until time.Time) ([]HourlyStat, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT bucket, sum(requests), sum(requests) FILTER (WHERE status <> 'ok'), sum(total_tokens), sum(cost_micro)
+		FROM request_rollup_hourly
+		WHERE app_id = $1 AND bucket >= $2 AND bucket < $3
+		GROUP BY bucket
+		ORDER BY bucket
+	`, appID, since, until)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to load hourly stats: %w", err)
+	}
+	defer rows.Close()
+
+	var out []HourlyStat
+	for rows.Next() {
+		var s HourlyStat
+		var errs *int64
+		if err := rows.Scan(&s.Bucket, &s.Requests, &errs, &s.TotalTokens, &s.CostMicro); err != nil {
+			return nil, fmt.Errorf("store: failed to scan hourly stat: %w", err)
+		}
+		if errs != nil {
+			s.Errors = *errs
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: failed to load hourly stats: %w", err)
+	}
+	return out, nil
+}
+
 func avgDuration(sumMS, requests int64) float64 {
 	if requests == 0 {
 		return 0

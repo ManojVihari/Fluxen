@@ -30,6 +30,7 @@ import (
 	"fluxen/internal/auth"
 	"fluxen/internal/cache"
 	"fluxen/internal/config"
+	"fluxen/internal/credentials"
 	"fluxen/internal/detect"
 	"fluxen/internal/gateway"
 	"fluxen/internal/guard"
@@ -38,11 +39,15 @@ import (
 	"fluxen/internal/measure"
 	"fluxen/internal/observability"
 	"fluxen/internal/policy"
+	"fluxen/internal/retention"
 	"fluxen/internal/rollup"
+	"fluxen/internal/score"
 	"fluxen/internal/store"
 	"fluxen/internal/worker"
 	"fluxen/pkg/pricing"
 	"fluxen/pkg/providers"
+	"fluxen/pkg/providers/gemini"
+	"fluxen/pkg/providers/ollama"
 	"fluxen/pkg/providers/openai"
 )
 
@@ -95,7 +100,11 @@ func run() error {
 	opportunities := store.NewOpportunities(pool)
 	simulations := store.NewSimulations(pool)
 	measurements := store.NewMeasurements(pool)
+	scores := store.NewScores(pool)
+	overview := store.NewOverview(pool)
 	policyStore := policy.NewStore(pool)
+	providerCredsStore := store.NewProviderCredentials(pool)
+	retentionSettingsSnapshot := retention.NewSnapshot(orgs)
 
 	// --- gateway ---
 	keyResolver := auth.NewResolver(keys)
@@ -127,31 +136,88 @@ func run() error {
 
 	var provider providers.Provider = openai.NewClient(nil)
 	cred := providers.Credential{APIKey: cfg.OpenAIAPIKey, BaseURL: cfg.OpenAIBaseURL}
+
+	// Gemini/Ollama client instances always exist — they're stateless
+	// HTTP clients, so building them costs nothing, and Settings >
+	// Providers (backed by the DB, not an env var) needs a live client to
+	// call Models/Health on regardless of whether the static env-var
+	// credentials below are ever set. extraCredentials stays the static,
+	// env-var-only fallback: a deployment with neither GEMINI_API_KEY nor
+	// OLLAMA_BASE_URL set, and no DB-managed credential either, behaves
+	// exactly like Phase 1-6's OpenAI-only gateway for those providers
+	// (Server.resolveProvider finds no credential from any source and
+	// 503s, same as today).
+	extraProviders := map[string]providers.Provider{
+		"gemini": gemini.NewClient(nil),
+		"ollama": ollama.NewClient(nil),
+	}
+	extraCredentials := map[string]providers.Credential{}
+	if cfg.GeminiAPIKey != "" {
+		extraCredentials["gemini"] = providers.Credential{APIKey: cfg.GeminiAPIKey}
+	}
+	if cfg.OllamaBaseURL != "" {
+		extraCredentials["ollama"] = providers.Credential{BaseURL: cfg.OllamaBaseURL}
+	}
+
+	// Provider clients exist regardless of which credential source is
+	// used (env var or the encrypted provider_credentials table below) —
+	// they're stateless HTTP clients, so the same three instances serve
+	// both the gateway's Chat/ChatStream calls and Settings > Providers'
+	// Models/Health calls.
+	allProviderClients := map[string]providers.Provider{"openai": provider}
+	for name, p := range extraProviders {
+		allProviderClients[name] = p
+	}
+
+	// Org-managed, encrypted provider credentials (Part E.1). This is
+	// what makes `docker compose up` with zero configuration produce a
+	// deployment where Settings > Providers just works: no env var is
+	// required — resolveEncryptionKey generates and persists a key to
+	// cfg.DataDir on first boot if FLUXEN_ENCRYPTION_KEY was never set.
+	credentialBox, err := resolveEncryptionKey(cfg.EncryptionKey, cfg.DataDir, logger)
+	if err != nil {
+		return err
+	}
+	credentialService := credentials.NewService(providerCredsStore, credentialBox)
+	credentialSnapshot := credentials.NewSnapshot(credentialService, redisClient, logger)
+	credSnapshotCtx, stopCredSnapshotSubscribe := context.WithCancel(context.Background())
+	defer stopCredSnapshotSubscribe() // idempotent; covers every early-return path below
+	go credentialSnapshot.Subscribe(credSnapshotCtx)
+
 	gatewaySrv := gateway.NewServer(gateway.Server{
 		Resolver: keyResolver, Provider: provider, Credential: cred, Catalog: catalog, Queue: queue,
-		Policy: policySnapshot, RateLimiter: rateLimiter, BudgetGuard: budgetGuard, Cache: cacheStore,
+		Providers: extraProviders, Credentials: extraCredentials, CredentialSnapshot: credentialSnapshot,
+		RetentionSettings: retentionSettingsSnapshot,
+		Policy:            policySnapshot, RateLimiter: rateLimiter, BudgetGuard: budgetGuard, Cache: cacheStore,
 		Logger: logger,
 	})
 
 	// --- control API ---
 	apiSrv := api.NewServer(api.Server{
-		Orgs:            orgs,
-		Users:           users,
-		Apps:            apps,
-		Keys:            keys,
-		Requests:        requests,
-		Rollups:         rollups,
-		Opportunities:   opportunities,
-		Simulations:     simulations,
-		Measurements:    measurements,
-		Policies:        policyStore,
-		Applier:         applier,
-		PolicySnapshot:  policySnapshot,
-		Catalog:         catalog,
-		Sessions:        auth.NewSessionStore(redisClient),
-		KeyResolver:     keyResolver,
-		DashboardOrigin: cfg.DashboardOrigin,
-		Logger:          logger,
+		Orgs:               orgs,
+		Users:              users,
+		Apps:               apps,
+		Keys:               keys,
+		Requests:           requests,
+		Rollups:            rollups,
+		Opportunities:      opportunities,
+		Simulations:        simulations,
+		Measurements:       measurements,
+		Scores:             scores,
+		Overview:           overview,
+		Credentials:        credentialService,
+		CredentialSnapshot: credentialSnapshot,
+		ProviderClients:    allProviderClients,
+		Policies:           policyStore,
+		Applier:            applier,
+		PolicySnapshot:     policySnapshot,
+		Catalog:            catalog,
+		Sessions:           auth.NewSessionStore(redisClient),
+		LoginLimiter:       auth.NewLoginLimiter(redisClient, logger),
+		KeyResolver:        keyResolver,
+		DashboardOrigin:    cfg.DashboardOrigin,
+		CookieSecure:       cfg.CookieSecure,
+		Logger:             logger,
 	})
 
 	// --- background jobs (Part C.7) ---
@@ -174,8 +240,12 @@ func run() error {
 	})
 	detectRunner := detect.NewRunner(apps, rollups, requests, opportunities, catalog, logger)
 	scheduler.Register(worker.Job{
-		Name:     "detect.model_cost",
-		Interval: 15 * time.Minute,
+		// Part C.7's frozen job table: "detect.run | every 6h per app |
+		// run all four detectors" — renamed from this job's earlier
+		// Phase-3 name/cadence ("detect.model_cost" every 15m) now that
+		// all four detectors actually run here, not just Model Cost.
+		Name:     "detect.run",
+		Interval: 6 * time.Hour,
 		Run:      detectRunner.Run,
 	})
 	measureRunner := measure.NewRunner(measurements, opportunities, requests, policyStore, logger)
@@ -183,6 +253,18 @@ func run() error {
 		Name:     "measure.check",
 		Interval: time.Hour,
 		Run:      measureRunner.Run,
+	})
+	scoreRunner := score.NewRunner(apps, rollups, requests, scores, catalog, logger)
+	scheduler.Register(worker.Job{
+		Name:     "score.daily",
+		Interval: 24 * time.Hour,
+		Run:      scoreRunner.Run,
+	})
+	retentionRunner := retention.NewRunner(orgs, store.NewRetention(pool), logger)
+	scheduler.Register(worker.Job{
+		Name:     "retention.enforce",
+		Interval: 24 * time.Hour,
+		Run:      retentionRunner.Run,
 	})
 
 	schedulerCtx, stopScheduler := context.WithCancel(context.Background())
@@ -202,6 +284,15 @@ func run() error {
 	srv := &http.Server{
 		Addr:    cfg.HTTPAddr,
 		Handler: router,
+		// ReadHeaderTimeout mitigates slow-header (Slowloris-style) DoS —
+		// a client that opens a connection and trickles headers in never
+		// ties one up indefinitely. IdleTimeout bounds how long a
+		// keep-alive connection sits idle. Deliberately no blanket
+		// ReadTimeout/WriteTimeout: streaming chat completions (SSE) can
+		// legitimately run for minutes, and a fixed WriteTimeout would
+		// truncate them mid-stream.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	serveErr := make(chan error, 1)

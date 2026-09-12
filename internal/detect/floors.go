@@ -26,7 +26,15 @@ func AppMeetsFloors(requests14d int64, spend14dMicro int64) bool {
 // this floor are still computed — by detectors themselves, for the
 // detector-quality self-check tests (Part K) — this function is the only
 // gate on whether they reach the opportunities table.
+//
+// Traffic anomaly candidates are exempt (Part G.3.4: "No savings number
+// is attached to an anomaly") — a savings floor is meaningless for a
+// kind that never reports one; anomalies pass straight through to
+// ranking/capping instead.
 func CandidateMeetsSavingsFloor(c Candidate) bool {
+	if c.Kind == KindTrafficAnomaly {
+		return true
+	}
 	return c.SavingsMicro >= MinSavingsMonthlyMicro && c.SavingsPct >= MinSavingsPct
 }
 

@@ -217,8 +217,8 @@ func buildCandidate(group []RequestFact, current, candidate pricing.ModelPrice, 
 	)
 
 	return Candidate{
-		Kind:           "model_cost",
-		Fingerprint:    fingerprint(appID, "model_cost", current.ID, candidate.ID),
+		Kind:           KindModelCost,
+		Fingerprint:    fingerprint(appID, KindModelCost, current.ID, candidate.ID),
 		Title:          title,
 		Summary:        summary,
 		WindowStart:    windowStart,

@@ -103,6 +103,24 @@ func (r *Runner) runForApplication(ctx context.Context, app store.Application) e
 
 	candidates := DetectModelCost(facts, r.Catalog, windowStart, windowEnd, app.ID)
 
+	repeatedCandidates, err := r.detectRepeatedRequest(ctx, app, windowEnd)
+	if err != nil {
+		return fmt.Errorf("failed to run repeated-request detector: %w", err)
+	}
+	candidates = append(candidates, repeatedCandidates...)
+
+	tokenEffCandidates, err := r.detectTokenEfficiency(ctx, app, now)
+	if err != nil {
+		return fmt.Errorf("failed to run token-efficiency detector: %w", err)
+	}
+	candidates = append(candidates, tokenEffCandidates...)
+
+	anomalyCandidates, err := r.detectTrafficAnomaly(ctx, app, now)
+	if err != nil {
+		return fmt.Errorf("failed to run traffic-anomaly detector: %w", err)
+	}
+	candidates = append(candidates, anomalyCandidates...)
+
 	var survivors []Candidate
 	for _, c := range candidates {
 		if CandidateMeetsSavingsFloor(c) {
@@ -119,6 +137,60 @@ func (r *Runner) runForApplication(ctx context.Context, app store.Application) e
 	return nil
 }
 
+// detectRepeatedRequest fetches Part G.3.2's trailing-7-day window of
+// cache-key-bearing requests and runs the Repeated Request detector.
+func (r *Runner) detectRepeatedRequest(ctx context.Context, app store.Application, windowEnd time.Time) ([]Candidate, error) {
+	windowStart := windowEnd.AddDate(0, 0, -repeatedRequestWindowDays)
+	storeFacts, err := r.Requests.RepeatedRequestFacts(ctx, app.ID, windowStart, windowEnd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load repeated-request facts: %w", err)
+	}
+
+	facts := make([]RepeatedRequestFact, len(storeFacts))
+	for i, f := range storeFacts {
+		facts[i] = RepeatedRequestFact{
+			StartedAt: f.StartedAt, CacheKey: f.CacheKey, CostMicro: f.CostMicro, CostStatus: f.CostStatus,
+			RequestedModel: f.RequestedModel, InputTokens: f.InputTokens, SystemPromptHash: f.SystemPromptHash,
+		}
+	}
+	return DetectRepeatedRequest(facts, windowStart, windowEnd, app.ID), nil
+}
+
+// detectTokenEfficiency fetches Part G.3.3's combined baseline+current
+// window of daily per-model stats and runs the Token Efficiency detector.
+func (r *Runner) detectTokenEfficiency(ctx context.Context, app store.Application, now time.Time) ([]Candidate, error) {
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	since := today.AddDate(0, 0, -(tokenEffBaselineDays + tokenEffCurrentDays))
+	storeStats, err := r.Rollups.DailyModelStats(ctx, app.ID, since, today.AddDate(0, 0, 1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to load daily model stats: %w", err)
+	}
+
+	stats := make([]DailyModelStat, len(storeStats))
+	for i, s := range storeStats {
+		stats[i] = DailyModelStat{Day: s.Day, Model: s.Model, Requests: s.Requests, InputTokensSum: s.InputTokensSum, OutputTokensSum: s.OutputTokensSum}
+	}
+	return DetectTokenEfficiency(stats, now, app.ID, r.Catalog), nil
+}
+
+// detectTrafficAnomaly fetches Part G.3.4's trailing-28-day hourly series
+// (the baseline and evaluation windows together) and runs the Traffic
+// Anomaly detector.
+func (r *Runner) detectTrafficAnomaly(ctx context.Context, app store.Application, now time.Time) ([]Candidate, error) {
+	hourEnd := now.Truncate(time.Hour).Add(time.Hour)
+	since := hourEnd.Add(-anomalyLookbackDays * 24 * time.Hour)
+	storeStats, err := r.Rollups.HourlyStats(ctx, app.ID, since, hourEnd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load hourly stats: %w", err)
+	}
+
+	stats := make([]HourlyStat, len(storeStats))
+	for i, s := range storeStats {
+		stats[i] = HourlyStat{Bucket: s.Bucket, Requests: s.Requests, Errors: s.Errors, TotalTokens: s.TotalTokens, CostMicro: s.CostMicro}
+	}
+	return DetectTrafficAnomaly(stats, now, app.ID), nil
+}
+
 func (r *Runner) persist(ctx context.Context, app store.Application, c Candidate) error {
 	evidence, err := json.Marshal(c.Evidence)
 	if err != nil {
@@ -131,7 +203,7 @@ func (r *Runner) persist(ctx context.Context, app store.Application, c Candidate
 
 	_, err = r.Opportunities.UpsertOpen(ctx, store.Opportunity{
 		OrgID: app.OrgID, AppID: app.ID,
-		Kind: c.Kind, Fingerprint: c.Fingerprint,
+		Kind: c.Kind, Fingerprint: c.Fingerprint, Severity: c.Severity,
 		Title: c.Title, Summary: c.Summary,
 		WindowStart: c.WindowStart, WindowEnd: c.WindowEnd, SampleRequests: c.SampleRequests,
 		CurrentCostMicro: c.CurrentCostMicro, ProjectedCostMicro: c.ProjectedCostMicro,

@@ -59,5 +59,21 @@ type UsageRecord struct {
 	Temperature  *float64
 	MaxTokensReq *int
 
+	// RequestBody/ResponseBody are the raw client request and provider
+	// response bytes, captured only when the owning org has body capture
+	// enabled (Settings > Retention, off by default). Both are nil
+	// otherwise — capture is opt-in, never silent. ResponseBody is only
+	// ever populated for non-streaming calls: a streamed response's SSE
+	// bytes aren't valid JSON, and the requests.response_body column is
+	// jsonb, so streamed response capture is a documented gap rather
+	// than a schema change made to force it in here.
+	//
+	// Neither field is redacted. Part G.6's "bodies off by default with
+	// redaction when enabled" names redaction as part of this feature;
+	// this pass ships real capture but not redaction — treat captured
+	// bodies as sensitive, unfiltered data (see docs/self-hosting.md).
+	RequestBody  []byte
+	ResponseBody []byte
+
 	WorkloadFeatures
 }

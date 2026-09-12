@@ -18,11 +18,49 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"fluxen/internal/auth"
+	"fluxen/internal/credentials"
+	"fluxen/internal/crypto"
 	"fluxen/internal/measure"
 	"fluxen/internal/policy"
 	"fluxen/internal/store"
 	"fluxen/pkg/pricing"
+	"fluxen/pkg/providers"
+	"fluxen/pkg/types"
 )
+
+// testEncryptionKey is a fixed, deterministic 32-byte key for tests — no
+// secrecy requirement here, just a stable key so encrypt/decrypt round-
+// trips work the same way every run.
+var testEncryptionKey = func() []byte {
+	k := make([]byte, crypto.KeySize)
+	for i := range k {
+		k[i] = byte(i)
+	}
+	return k
+}()
+
+// fakeCredentialProvider is a minimal providers.Provider test double for
+// exercising Settings > Providers' Health/Models endpoints without a
+// real upstream call.
+type fakeCredentialProvider struct {
+	name      string
+	healthErr error
+	models    []providers.ModelInfo
+}
+
+func (f *fakeCredentialProvider) Name() string { return f.name }
+func (f *fakeCredentialProvider) Chat(context.Context, *types.CanonicalRequest, providers.Credential) (*types.CanonicalResponse, error) {
+	panic("not used in these tests")
+}
+func (f *fakeCredentialProvider) ChatStream(context.Context, *types.CanonicalRequest, providers.Credential) (providers.StreamReader, error) {
+	panic("not used in these tests")
+}
+func (f *fakeCredentialProvider) Models(context.Context, providers.Credential) ([]providers.ModelInfo, error) {
+	return f.models, nil
+}
+func (f *fakeCredentialProvider) Health(context.Context, providers.Credential) error {
+	return f.healthErr
+}
 
 // newTestEnv stands up disposable Postgres + Redis containers, applies
 // migrations, and returns a fully-wired API Server plus an httptest
@@ -100,6 +138,14 @@ func newTestEnv(t *testing.T) (*Server, *http.Client, string, *pgxpool.Pool) {
 	if err != nil {
 		t.Fatalf("failed to load pricing catalog: %v", err)
 	}
+
+	box, err := crypto.NewBox(testEncryptionKey)
+	if err != nil {
+		t.Fatalf("failed to build test crypto box: %v", err)
+	}
+	credentialService := credentials.NewService(store.NewProviderCredentials(pool), box)
+	credentialSnapshot := credentials.NewSnapshot(credentialService, redisClient, nil)
+
 	srv := NewServer(Server{
 		Orgs:          store.NewOrganizations(pool),
 		Users:         store.NewUsers(pool),
@@ -110,13 +156,23 @@ func newTestEnv(t *testing.T) (*Server, *http.Client, string, *pgxpool.Pool) {
 		Opportunities: opportunities,
 		Simulations:   simulations,
 		Measurements:  measurements,
+		Scores:        store.NewScores(pool),
+		Overview:      store.NewOverview(pool),
 		Policies:      policyStore,
 		Applier: &policy.Applier{
 			Policies: policyStore, Opportunities: opportunities, Simulations: simulations,
 			Measurer: measure.NewFreezer(requests, measurements),
 		},
-		Catalog:  catalog,
-		Sessions: auth.NewSessionStore(redisClient),
+		Catalog:            catalog,
+		Sessions:           auth.NewSessionStore(redisClient),
+		LoginLimiter:       auth.NewLoginLimiter(redisClient, nil),
+		Credentials:        credentialService,
+		CredentialSnapshot: credentialSnapshot,
+		ProviderClients: map[string]providers.Provider{
+			"openai": &fakeCredentialProvider{name: "openai", models: []providers.ModelInfo{{ID: "gpt-4o-mini"}}},
+			"gemini": &fakeCredentialProvider{name: "gemini", models: []providers.ModelInfo{{ID: "gemini-1.5-flash"}}},
+			"ollama": &fakeCredentialProvider{name: "ollama", models: []providers.ModelInfo{{ID: "llama3.2"}}},
+		},
 	})
 
 	ts := httptest.NewServer(srv.Router())
@@ -283,6 +339,45 @@ func TestLogin_WrongPasswordRejected(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for wrong password, got %d", resp.StatusCode)
+	}
+}
+
+func TestLogin_RateLimitedAfterRepeatedFailures(t *testing.T) {
+	_, client, baseURL, _ := newTestEnv(t)
+
+	doJSON(t, client, http.MethodPost, baseURL+"/api/v1/setup", setupRequest{
+		OrgName: "Acme", Email: "owner@example.com", Password: "supersecret123",
+	}).Body.Close()
+	doJSON(t, client, http.MethodPost, baseURL+"/api/v1/auth/logout", nil).Body.Close()
+
+	// loginRateLimitMaxAttempts (10) failed attempts from the same source
+	// IP should all still be evaluated normally (401, not yet limited);
+	// the 11th must be rejected before it even touches the password check.
+	var last *http.Response
+	for i := 0; i < 11; i++ {
+		last = doJSON(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", loginRequest{
+			Email: "owner@example.com", Password: "wrong-password",
+		})
+		if i < 10 {
+			if last.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("attempt %d: expected 401 (not yet rate-limited), got %d", i+1, last.StatusCode)
+			}
+			last.Body.Close()
+		}
+	}
+	defer last.Body.Close()
+	if last.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after exceeding the login rate limit, got %d", last.StatusCode)
+	}
+
+	// The correct password is rejected too, while still rate-limited —
+	// the limiter runs before credential verification, not after.
+	blocked := doJSON(t, client, http.MethodPost, baseURL+"/api/v1/auth/login", loginRequest{
+		Email: "owner@example.com", Password: "supersecret123",
+	})
+	defer blocked.Body.Close()
+	if blocked.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected the correct password to also be rate-limited, got %d", blocked.StatusCode)
 	}
 }
 

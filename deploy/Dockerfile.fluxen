@@ -2,7 +2,7 @@
 # deployment target — cmd/fluxen-gateway and cmd/fluxen-control split images
 # are an opt-in scaling step added later, not built here.
 
-FROM golang:1.26-alpine AS build
+FROM golang:1.26.8-alpine AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./
@@ -19,6 +19,15 @@ RUN apk add --no-cache ca-certificates && \
     addgroup -S fluxen && adduser -S fluxen -G fluxen
 COPY --from=build /out/fluxen /usr/local/bin/fluxen
 COPY --from=build /out/fluxenctl /usr/local/bin/fluxenctl
+
+# /data is where cmd/fluxen persists small local state that isn't a fit for
+# Postgres — today, the auto-generated credential encryption key
+# (resolveEncryptionKey in cmd/fluxen/encryption.go). Created and chowned
+# here, before USER fluxen, since the non-root process can't create it
+# itself once the volume is mounted read/write-only by that uid.
+RUN mkdir -p /data && chown fluxen:fluxen /data
+VOLUME /data
+
 USER fluxen
 
 EXPOSE 8080

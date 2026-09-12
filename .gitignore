@@ -10,6 +10,11 @@ node_modules/
 out/
 .turbo/
 
+# Playwright (web/apps/e2e)
+test-results/
+playwright-report/
+blob-report/
+
 # Env
 .env
 .env.local

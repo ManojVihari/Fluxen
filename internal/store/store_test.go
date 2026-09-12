@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -298,6 +300,73 @@ func TestRequests_InsertBatch(t *testing.T) {
 	}
 	if count != 2 {
 		t.Errorf("expected 2 requests to be inserted, got %d", count)
+	}
+}
+
+// TestRequests_InsertBatch_CapturesBodyWhenSet is a regression test for
+// Part G.6's opt-in body capture: request_body/response_body must round-
+// trip through InsertBatch -> Get exactly, and stay nil when a record
+// carries no captured bytes (the off-by-default case).
+func TestRequests_InsertBatch_CapturesBodyWhenSet(t *testing.T) {
+	pool := newTestPool(t)
+	orgID := seedOrg(t, pool)
+	apps := NewApplications(pool)
+	reqs := NewRequests(pool)
+
+	app, err := apps.Create(context.Background(), orgID, "app", "App")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	captured := types.UsageRecord{
+		ID: "33333333-3333-3333-3333-333333333333", OrgID: orgID, AppID: app.ID,
+		StartedAt: time.Now(), DurationMS: 50,
+		Endpoint: "chat.completions", Protocol: "openai", Streamed: false,
+		RequestedModel: "gpt-4o-mini", Provider: "openai", Model: "gpt-4o-mini",
+		RouteReason: "direct", InputTokens: 5, OutputTokens: 3, TotalTokens: 8,
+		UsageSource: "provider", Cost: 10, CostStatus: types.CostKnown,
+		PricingVersion: "test", CacheStatus: "disabled", Status: "ok", HTTPStatus: 200,
+		RequestBody:  []byte(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`),
+		ResponseBody: []byte(`{"id":"chatcmpl-1","choices":[{"message":{"role":"assistant","content":"hi"}}]}`),
+	}
+	notCaptured := captured
+	notCaptured.ID = "44444444-4444-4444-4444-444444444444"
+	notCaptured.RequestBody = nil
+	notCaptured.ResponseBody = nil
+
+	if err := reqs.InsertBatch(context.Background(), []types.UsageRecord{captured, notCaptured}); err != nil {
+		t.Fatalf("unexpected error inserting batch: %v", err)
+	}
+
+	got, err := reqs.Get(context.Background(), orgID, captured.ID)
+	if err != nil {
+		t.Fatalf("unexpected error fetching captured record: %v", err)
+	}
+	// jsonb re-serializes on storage (whitespace/key-order aren't
+	// preserved byte-for-byte) — compare parsed equality, not raw bytes.
+	assertJSONEqual(t, "request_body", captured.RequestBody, got.RequestBody)
+	assertJSONEqual(t, "response_body", captured.ResponseBody, got.ResponseBody)
+
+	gotUncaptured, err := reqs.Get(context.Background(), orgID, notCaptured.ID)
+	if err != nil {
+		t.Fatalf("unexpected error fetching uncaptured record: %v", err)
+	}
+	if gotUncaptured.RequestBody != nil || gotUncaptured.ResponseBody != nil {
+		t.Errorf("expected no body for a record that never captured one, got request=%q response=%q", gotUncaptured.RequestBody, gotUncaptured.ResponseBody)
+	}
+}
+
+func assertJSONEqual(t *testing.T, field string, want, got []byte) {
+	t.Helper()
+	var wantVal, gotVal any
+	if err := json.Unmarshal(want, &wantVal); err != nil {
+		t.Fatalf("unexpected error parsing expected %s: %v", field, err)
+	}
+	if err := json.Unmarshal(got, &gotVal); err != nil {
+		t.Fatalf("unexpected error parsing stored %s (%q): %v", field, got, err)
+	}
+	if !reflect.DeepEqual(wantVal, gotVal) {
+		t.Errorf("expected %s to round-trip (parsed) equal, want %s got %s", field, want, got)
 	}
 }
 

@@ -33,7 +33,7 @@ const insertRequestSQL = `
 		cache_status, cache_key, cache_saved_micro,
 		status, http_status, error_code, error_message,
 		has_tools, has_tool_calls, has_images, json_mode, temperature, max_tokens,
-		message_count, system_prompt_hash
+		message_count, system_prompt_hash, request_body, response_body
 	) VALUES (
 		$1, $2, $3, $4, $5, $6, $7,
 		$8, $9, $10,
@@ -43,7 +43,7 @@ const insertRequestSQL = `
 		$27, $28, $29,
 		$30, $31, $32, $33,
 		$34, $35, $36, $37, $38, $39,
-		$40, $41
+		$40, $41, $42, $43
 	)
 `
 
@@ -68,7 +68,7 @@ func (r *Requests) InsertBatch(ctx context.Context, records []types.UsageRecord)
 			rec.CacheStatus, nullableBytes(rec.CacheKey), int64(rec.CacheSavedCost),
 			rec.Status, nullableInt(rec.HTTPStatus), nullableString(rec.ErrorCode), nullableString(rec.ErrorMessage),
 			rec.HasTools, rec.HasToolCalls, rec.HasImages, rec.JSONMode, rec.Temperature, rec.MaxTokensReq,
-			rec.MessageCount, nullableBytes(rec.SystemPromptHash),
+			rec.MessageCount, nullableBytes(rec.SystemPromptHash), nullableBytes(rec.RequestBody), nullableBytes(rec.ResponseBody),
 		)
 	}
 
@@ -207,6 +207,53 @@ func (r *Requests) PeriodStats(ctx context.Context, appID types.AppID, since, un
 		return 0, 0, fmt.Errorf("store: failed to load period stats: %w", err)
 	}
 	return requests, costMicro, nil
+}
+
+// RepeatedRequestFact is the per-request shape the Repeated Request
+// detector (Part G.3.2) reads: enough to group by cache_key, replay
+// chronologically through a simulated TTL cache (internal/sim), and
+// describe the top duplicated "shapes" in evidence without ever needing
+// the request body itself.
+type RepeatedRequestFact struct {
+	StartedAt        time.Time
+	CacheKey         []byte
+	CostMicro        int64
+	CostStatus       types.CostStatus
+	RequestedModel   string
+	InputTokens      int
+	SystemPromptHash []byte
+}
+
+// RepeatedRequestFacts returns every successfully-served, known-cost
+// request with a cache key for an application in [since, until), ordered
+// chronologically — a request with no cache key (pre-Phase-4 history)
+// can never be part of a duplicate group and is excluded up front.
+func (r *Requests) RepeatedRequestFacts(ctx context.Context, appID types.AppID, since, until time.Time) ([]RepeatedRequestFact, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT started_at, cache_key, cost_micro, cost_status, requested_model, input_tokens, system_prompt_hash
+		FROM requests
+		WHERE app_id = $1 AND started_at >= $2 AND started_at < $3 AND status = 'ok' AND cache_key IS NOT NULL
+		ORDER BY started_at, id
+	`, appID, since, until)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to load repeated-request facts: %w", err)
+	}
+	defer rows.Close()
+
+	var facts []RepeatedRequestFact
+	for rows.Next() {
+		var f RepeatedRequestFact
+		var costStatus string
+		if err := rows.Scan(&f.StartedAt, &f.CacheKey, &f.CostMicro, &costStatus, &f.RequestedModel, &f.InputTokens, &f.SystemPromptHash); err != nil {
+			return nil, fmt.Errorf("store: failed to scan repeated-request fact: %w", err)
+		}
+		f.CostStatus = types.CostStatus(costStatus)
+		facts = append(facts, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: failed to load repeated-request facts: %w", err)
+	}
+	return facts, nil
 }
 
 func nullableString(s string) any {

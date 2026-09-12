@@ -11,9 +11,14 @@ import {
   type ModelCostRecommendation,
   type ModelMixBreakdownRow,
   type Opportunity,
+  type RepeatedRequestEvidence,
+  type RepeatedRequestRecommendation,
   type Simulation,
+  type TokenEfficiencyEvidence,
+  type TrafficAnomalyEvidence,
 } from "@/lib/api";
 import { Badge, Button, ErrorBanner } from "@/components/ui";
+import { BarChart } from "@/components/bar-chart";
 import { formatMoney, formatNumber, formatPercent } from "@/lib/format";
 
 // The Optimizations detail page — Part I.2's core Fluxen UX, strictly
@@ -124,6 +129,15 @@ function WhySection({ opportunity }: { opportunity: Opportunity }) {
 }
 
 function EvidenceSection({ opportunity }: { opportunity: Opportunity }) {
+  if (opportunity.kind === "repeated_request") {
+    return <RepeatedRequestEvidenceSection opportunity={opportunity} />;
+  }
+  if (opportunity.kind === "token_efficiency") {
+    return <TokenEfficiencyEvidenceSection opportunity={opportunity} />;
+  }
+  if (opportunity.kind === "traffic_anomaly") {
+    return <TrafficAnomalyEvidenceSection opportunity={opportunity} />;
+  }
   if (opportunity.kind !== "model_cost") {
     return (
       <Section title="Evidence">
@@ -210,7 +224,210 @@ function TokenStat({ label, value }: { label: string; value: number }) {
   );
 }
 
+// RepeatedRequestEvidenceSection renders Part G.3.2's own evidence: the
+// TTL sweep table so the user can see the savings curve across all four
+// candidate TTLs (not just the one Fluxen recommends), plus the top
+// duplicated request shapes — grouped by system_prompt_hash + model,
+// never raw prompt text.
+function RepeatedRequestEvidenceSection({ opportunity }: { opportunity: Opportunity }) {
+  const evidence = opportunity.evidence as RepeatedRequestEvidence;
+  const recommendation = opportunity.recommendation as RepeatedRequestRecommendation;
+
+  return (
+    <Section title="Evidence">
+      <div className="space-y-4">
+        <div>
+          <div className="mb-1 flex justify-between text-xs text-slate-500">
+            <span>Exact-duplicate rate (last {evidence.window_days}d)</span>
+            <span>
+              {formatNumber(evidence.duplicate_requests)} / {formatNumber(evidence.total_requests)} (
+              {formatPercent(evidence.duplicate_rate)})
+            </span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+            <div
+              className="h-full rounded-full bg-emerald-500"
+              style={{ width: `${Math.min(evidence.duplicate_rate * 100, 100)}%` }}
+            />
+          </div>
+        </div>
+
+        <div>
+          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">TTL sweep</p>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-slate-200 text-left text-slate-500">
+                <th className="py-1 font-medium">TTL</th>
+                <th className="py-1 text-right font-medium">Duplicate hits</th>
+                <th className="py-1 text-right font-medium">est. savings/mo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {evidence.ttl_sweep.map((row) => (
+                <tr key={row.ttl} className="border-b border-slate-100 last:border-0">
+                  <td className="py-1 text-slate-700">
+                    {row.ttl}
+                    {recommendation.recommended_ttl_seconds === ttlToSeconds(row.ttl) && (
+                      <span className="ml-2 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-700">
+                        recommended
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-1 text-right">{formatNumber(row.duplicate_hits)}</td>
+                  <td className="py-1 text-right">{formatMoney(row.savings_micro)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {evidence.top_shapes.length > 0 && (
+          <div>
+            <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">
+              Top duplicated request shapes
+            </p>
+            <ul className="space-y-1 text-sm text-slate-600">
+              {evidence.top_shapes.map((shape) => (
+                <li key={shape.system_prompt_hash + shape.model} className="flex justify-between">
+                  <span className="truncate">
+                    {shape.model} · prompt {shape.system_prompt_hash.slice(0, 8)}… · ~
+                    {formatNumber(shape.input_tokens_p50)} input tokens
+                  </span>
+                  <span>{formatNumber(shape.count)}×</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+function ttlToSeconds(label: string): number {
+  const map: Record<string, number> = { "5m": 300, "1h": 3600, "6h": 21600, "24h": 86400 };
+  return map[label] ?? -1;
+}
+
+// TokenEfficiencyEvidenceSection renders Part G.3.3's evidence: the
+// baseline-vs-current mean-token drift plus the daily sparkline (with
+// the change-point date, when one was found) so the user can see when
+// the drift started, not just that it exists.
+function TokenEfficiencyEvidenceSection({ opportunity }: { opportunity: Opportunity }) {
+  const evidence = opportunity.evidence as TokenEfficiencyEvidence;
+
+  return (
+    <Section title="Evidence">
+      <div className="space-y-4">
+        <div className="flex items-center gap-3 text-sm">
+          <Badge>{evidence.dimension} tokens</Badge>
+          <span className="text-slate-700">{evidence.model}</span>
+        </div>
+
+        <div className="grid grid-cols-3 gap-4 text-sm">
+          <TokenStat label="Baseline mean" value={Math.round(evidence.baseline_mean_tokens)} />
+          <TokenStat label="Current mean" value={Math.round(evidence.current_mean_tokens)} />
+          <div>
+            <p className="text-xs text-slate-400">Drift</p>
+            <p className="font-medium text-red-600">+{formatPercent(evidence.drift_pct)}</p>
+          </div>
+        </div>
+
+        {evidence.daily_sparkline.length > 0 && (
+          <div>
+            <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">
+              Daily mean, trailing window
+              {evidence.change_point_date && ` · drift began around ${evidence.change_point_date}`}
+            </p>
+            <BarChart
+              data={evidence.daily_sparkline.map((p) => ({ label: p.day.slice(5), value: p.mean_tokens }))}
+              valueLabel={(v) => `${Math.round(v)} tok`}
+            />
+          </div>
+        )}
+
+        <p className="text-xs text-slate-500">
+          Based on {formatNumber(evidence.baseline_requests)} baseline and{" "}
+          {formatNumber(evidence.current_requests)} current-window requests for {evidence.model}.
+        </p>
+      </div>
+    </Section>
+  );
+}
+
+// TrafficAnomalyEvidenceSection renders Part G.3.4's evidence: the
+// hourly series around the anomalous window and how far it deviated
+// from this application's own seasonal baseline. Traffic anomaly
+// candidates carry no cost/savings figures at all (Part G.3.4: "no
+// savings number is attached to an anomaly") — this is the one kind
+// whose evidence is the entire story, not a supplement to an Impact
+// section.
+function TrafficAnomalyEvidenceSection({ opportunity }: { opportunity: Opportunity }) {
+  const evidence = opportunity.evidence as TrafficAnomalyEvidence;
+
+  return (
+    <Section title="Evidence">
+      <div className="space-y-4">
+        <div className="flex items-center gap-3 text-sm">
+          <Badge tone={opportunity.severity === "high" ? "warn" : "neutral"}>
+            {opportunity.severity ?? "medium"} severity
+          </Badge>
+          <span className="text-slate-700">{evidence.metric.replace(/_/g, " ")} anomaly</span>
+          <span className="text-xs text-slate-400">z = {evidence.peak_z_score.toFixed(1)}</span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-3">
+          <TokenStat label="Baseline (typical)" value={Math.round(evidence.baseline_median)} />
+          <TokenStat label="Peak observed" value={Math.round(evidence.peak_value)} />
+          {evidence.error_rate_spike_pct > 0 && (
+            <div>
+              <p className="text-xs text-slate-400">Error rate spike</p>
+              <p className="font-medium text-red-600">+{formatPercent(evidence.error_rate_spike_pct)}</p>
+            </div>
+          )}
+        </div>
+
+        {evidence.hourly_series.length > 0 && (
+          <div>
+            <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">
+              Hourly {evidence.metric.replace(/_/g, " ")} during the anomalous window
+            </p>
+            <BarChart
+              data={evidence.hourly_series.map((p) => ({
+                label: p.bucket.slice(11, 16),
+                value:
+                  evidence.metric === "cost"
+                    ? p.cost_micro
+                    : evidence.metric === "tokens"
+                      ? p.total_tokens
+                      : evidence.metric === "error_rate"
+                        ? p.error_rate
+                        : p.requests,
+              }))}
+              valueLabel={(v) => formatNumber(Math.round(v))}
+            />
+          </div>
+        )}
+
+        <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          This is a stability signal, not a cost-savings opportunity — Fluxen never attaches a dollar
+          estimate to an anomaly. Investigate the underlying traffic in Requests before deciding whether
+          action is needed.
+        </p>
+      </div>
+    </Section>
+  );
+}
+
 function ImpactSection({ opportunity }: { opportunity: Opportunity }) {
+  // Traffic anomaly candidates carry no cost/savings figures at all
+  // (Part G.3.4) — their entire story already lives in the Evidence
+  // section above, so Impact simply doesn't render for this kind rather
+  // than showing three zeroed-out dollar figures.
+  if (opportunity.kind === "traffic_anomaly") {
+    return null;
+  }
+
   return (
     <Section title="Impact">
       <div className="grid grid-cols-3 gap-4 text-sm">
@@ -239,15 +456,111 @@ function Impact({ label, value }: { label: string; value: string }) {
 }
 
 function SimulateSection({ opportunity }: { opportunity: Opportunity }) {
-  if (opportunity.kind !== "model_cost") {
-    return (
-      <Section title="Simulate">
-        <p className="text-sm text-slate-500">No simulation scenario for this opportunity kind yet.</p>
-      </Section>
-    );
+  if (opportunity.kind === "model_cost") {
+    return <ModelMixSimulateSection opportunity={opportunity} />;
+  }
+  if (opportunity.kind === "repeated_request") {
+    return <CachingSimulateSection opportunity={opportunity} />;
+  }
+  if (opportunity.kind === "traffic_anomaly") {
+    return null; // no scenario applies to a stability signal
+  }
+  return (
+    <Section title="Simulate">
+      <p className="text-sm text-slate-500">No simulation scenario for this opportunity kind yet.</p>
+    </Section>
+  );
+}
+
+// CachingSimulateSection lets a Repeated Request opportunity run the
+// exact same exact-caching replay internal/sim already supports (Phase
+// 4), pre-filled with the detector's own recommended TTL. Apply is
+// intentionally absent here: policy.Applier only patches the routing
+// control (Phase 5's scope) — extending Apply to a caching patch is a
+// real backend gap this pass does not close, so the button below is
+// disabled with an honest explanation rather than a half-working flow.
+function CachingSimulateSection({ opportunity }: { opportunity: Opportunity }) {
+  const recommendation = opportunity.recommendation as RepeatedRequestRecommendation;
+
+  const [ttlSeconds, setTtlSeconds] = useState(recommendation.recommended_ttl_seconds);
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<Simulation | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function runSimulation() {
+    setRunning(true);
+    setError(null);
+    try {
+      const sim = await api.createSimulation({
+        app_id: opportunity.app_id,
+        opportunity_id: opportunity.id,
+        scenario: { type: "exact_caching", ttl_seconds: ttlSeconds },
+      });
+      setResult(sim);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to run simulation.");
+    } finally {
+      setRunning(false);
+    }
   }
 
-  return <ModelMixSimulateSection opportunity={opportunity} />;
+  return (
+    <Section title="Simulate">
+      <div className="space-y-4">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-slate-600">Cache TTL</label>
+          <select
+            className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+            value={ttlSeconds}
+            onChange={(e) => setTtlSeconds(Number(e.target.value))}
+          >
+            <option value={300}>5 minutes</option>
+            <option value={3600}>1 hour</option>
+            <option value={21600}>6 hours</option>
+            <option value={86400}>24 hours</option>
+          </select>
+        </div>
+
+        <ErrorBanner message={error} />
+
+        <Button onClick={runSimulation} disabled={running}>
+          {running ? "Running…" : "Run simulation"}
+        </Button>
+
+        {result && (
+          <div className="rounded-md border border-slate-200 p-3">
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">
+              Replayed {formatNumber(result.replayed_requests)} real requests
+              {result.sampled ? " (sampled)" : ""} over {result.window_start.slice(0, 10)} –{" "}
+              {result.window_end.slice(0, 10)}
+            </p>
+            <div className="grid grid-cols-3 gap-4 text-sm">
+              <Impact label="Current cost" value={formatMoney(result.actual_cost_micro)} />
+              <Impact label="Simulated cost" value={formatMoney(result.simulated_cost_micro)} />
+              <Impact
+                label="Delta"
+                value={`${formatMoney(result.delta_micro)} (${formatPercent(result.delta_pct)})`}
+              />
+            </div>
+            <p className="mt-2 text-xs text-slate-500">
+              {formatNumber(result.affected_requests)} of {formatNumber(result.replayed_requests)} requests
+              would have been served from cache.
+            </p>
+          </div>
+        )}
+
+        <div className="border-t border-slate-100 pt-3">
+          <button
+            disabled
+            title="Applying a caching change isn't available yet — only model routing changes can be applied in this release."
+            className="cursor-not-allowed rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-400"
+          >
+            Apply
+          </button>
+        </div>
+      </div>
+    </Section>
+  );
 }
 
 function ModelMixSimulateSection({ opportunity }: { opportunity: Opportunity }) {

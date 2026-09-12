@@ -54,11 +54,49 @@ type Config struct {
 	// feature.
 	OpenAIBaseURL string
 
+	// GeminiAPIKey/OllamaBaseURL are the same Phase-1-style deployment-
+	// wide simplification as OpenAIAPIKey above, extended to the two
+	// providers Phase 7 adds. Real per-org, encrypted, UI-managed
+	// provider_credentials (Part E.1) remain a documented gap this pass
+	// does not close — see the Phase 7 completion notes — but a
+	// deployment can still proxy real Gemini and Ollama traffic today via
+	// these env vars, the same way Phase 1 shipped OpenAI support before
+	// its own credentials table existed.
+	GeminiAPIKey string
+	// OllamaBaseURL points at a self-hosted Ollama instance (e.g.
+	// http://localhost:11434, or a Docker Compose service name). Ollama
+	// support is only enabled when this is set — unlike OpenAI/Gemini,
+	// there is no public default endpoint to fall back to.
+	OllamaBaseURL string
+
+	// EncryptionKey is a base64-encoded 32-byte AES-256 key (e.g.
+	// `openssl rand -base64 32`) used to encrypt provider_credentials at
+	// rest (Part E.1). Entirely optional: a deployment that never sets it
+	// isn't left without encrypted credential storage the way this field's
+	// name might suggest — cmd/fluxen's own resolveEncryptionKey generates
+	// and persists one to DataDir on first boot instead. Setting this env
+	// var only matters for an operator who wants to manage the key
+	// themselves (a secrets manager, a value injected by their own
+	// orchestration) rather than let Fluxen generate and store it.
+	EncryptionKey string
+
+	// DataDir is where cmd/fluxen persists small local state that isn't a
+	// fit for Postgres — today, just the generated encryption key above.
+	// docker-compose.yml backs this with its own named volume, separate
+	// from the Postgres volume the encrypted data itself lives in.
+	DataDir string
+
 	// DashboardOrigin is the browser origin the control API allows to
 	// make credentialed cross-origin requests (CORS) — the dashboard
 	// runs on a different port than the API in the default compose
 	// deployment.
 	DashboardOrigin string
+
+	// CookieSecure sets the session cookie's Secure flag. Defaults to
+	// false so the default compose deployment (plain HTTP) works out of
+	// the box; an operator who puts TLS in front of Fluxen should set
+	// FLUXEN_COOKIE_SECURE=true.
+	CookieSecure bool
 }
 
 const (
@@ -69,7 +107,12 @@ const (
 	envEnv             = "FLUXEN_ENV"
 	envOpenAIAPIKey    = "OPENAI_API_KEY"
 	envOpenAIBaseURL   = "FLUXEN_OPENAI_BASE_URL"
+	envGeminiAPIKey    = "GEMINI_API_KEY"
+	envOllamaBaseURL   = "OLLAMA_BASE_URL"
+	envEncryptionKey   = "FLUXEN_ENCRYPTION_KEY"
+	envDataDir         = "FLUXEN_DATA_DIR"
 	envDashboardOrigin = "FLUXEN_DASHBOARD_ORIGIN"
+	envCookieSecure    = "FLUXEN_COOKIE_SECURE"
 )
 
 // Load reads configuration from the process environment and validates it.
@@ -85,7 +128,12 @@ func Load() (*Config, error) {
 		RedisURL:        os.Getenv(envRedisURL),
 		OpenAIAPIKey:    os.Getenv(envOpenAIAPIKey),
 		OpenAIBaseURL:   os.Getenv(envOpenAIBaseURL),
+		GeminiAPIKey:    os.Getenv(envGeminiAPIKey),
+		OllamaBaseURL:   os.Getenv(envOllamaBaseURL),
+		EncryptionKey:   os.Getenv(envEncryptionKey),
+		DataDir:         getOrDefault(envDataDir, "/data"),
 		DashboardOrigin: getOrDefault(envDashboardOrigin, "http://localhost:3000"),
+		CookieSecure:    os.Getenv(envCookieSecure) == "true",
 	}
 
 	var missing []string

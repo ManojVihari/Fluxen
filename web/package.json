@@ -6,6 +6,7 @@
     "dev:dashboard": "pnpm --filter fluxen-dashboard dev",
     "dev:website": "pnpm --filter fluxen-website dev",
     "build": "pnpm --filter fluxen-dashboard build && pnpm --filter fluxen-website build",
-    "lint": "pnpm --filter fluxen-dashboard lint && pnpm --filter fluxen-website lint"
+    "lint": "pnpm --filter fluxen-dashboard lint && pnpm --filter fluxen-website lint",
+    "test:e2e": "pnpm --filter fluxen-e2e test"
   }
 }

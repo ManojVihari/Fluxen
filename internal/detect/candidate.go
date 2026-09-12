@@ -9,6 +9,15 @@ package detect
 
 import "time"
 
+// The four frozen detector kinds (Part G.3), matching the opportunities
+// table's kind CHECK constraint exactly.
+const (
+	KindModelCost       = "model_cost"
+	KindRepeatedRequest = "repeated_request"
+	KindTokenEfficiency = "token_efficiency"
+	KindTrafficAnomaly  = "traffic_anomaly"
+)
+
 // Confidence is the detector's own qualitative trust label (Part G.3.1).
 type Confidence string
 
@@ -43,6 +52,10 @@ type Candidate struct {
 	Fingerprint string
 	Title       string
 	Summary     string
+	// Severity is only ever set by the traffic anomaly detector ("medium"
+	// or "high", Part G.3.4) — nil for every other kind, matching
+	// opportunities.severity's nullable, mostly-unused shape (Part E.1).
+	Severity *string
 
 	WindowStart    time.Time
 	WindowEnd      time.Time
