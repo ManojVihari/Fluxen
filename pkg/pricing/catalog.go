@@ -9,6 +9,7 @@ package pricing
 import (
 	_ "embed"
 	"fmt"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 
@@ -19,12 +20,34 @@ import (
 var catalogYAML []byte
 
 // ModelPrice is one catalog entry: per-million-token input/output prices
-// in micro-USD for a specific (provider, model) pair.
+// in micro-USD for a specific (provider, model) pair, plus the shape
+// fields (Part H.1) the Model Cost detector (Part G.3.1) needs to decide
+// whether a request could plausibly run on a cheaper candidate.
 type ModelPrice struct {
-	ID                 string `yaml:"id"`
-	Provider           string `yaml:"provider"`
-	InputPerMTokMicro  int64  `yaml:"input_per_mtok_micro"`
-	OutputPerMTokMicro int64  `yaml:"output_per_mtok_micro"`
+	ID                 string   `yaml:"id"`
+	Provider           string   `yaml:"provider"`
+	InputPerMTokMicro  int64    `yaml:"input_per_mtok_micro"`
+	OutputPerMTokMicro int64    `yaml:"output_per_mtok_micro"`
+	ContextWindow      int      `yaml:"context_window"`
+	MaxOutput          int      `yaml:"max_output"`
+	Capabilities       []string `yaml:"capabilities"`
+	Tier               string   `yaml:"tier"`
+	// DowngradeCandidatesFor lists the model ids this entry is a declared
+	// cheaper stand-in for — the *only* source of candidates the Model
+	// Cost detector considers (Part G.3.1: "never invented at detection
+	// time").
+	DowngradeCandidatesFor []string `yaml:"downgrade_candidates_for"`
+}
+
+// HasCapability reports whether the model declares a capability
+// (Part H.1's capabilities list: tools, vision, json_schema, streaming).
+func (m ModelPrice) HasCapability(cap string) bool {
+	for _, c := range m.Capabilities {
+		if c == cap {
+			return true
+		}
+	}
+	return false
 }
 
 // Catalog is a versioned, immutable price list. Load it once at boot
@@ -69,6 +92,24 @@ func parseCatalog(data []byte) (*Catalog, error) {
 func (c *Catalog) Lookup(model string) (ModelPrice, bool) {
 	p, ok := c.byModel[model]
 	return p, ok
+}
+
+// DowngradeCandidates returns every catalog entry that declares model as
+// one of its downgrade_candidates_for — the Model Cost detector's entire
+// candidate set for that model (Part G.3.1), sorted by id for a
+// deterministic iteration order.
+func (c *Catalog) DowngradeCandidates(model string) []ModelPrice {
+	var out []ModelPrice
+	for _, p := range c.byModel {
+		for _, target := range p.DowngradeCandidatesFor {
+			if target == model {
+				out = append(out, p)
+				break
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 // Calculate prices a request's usage against the catalog. If the model

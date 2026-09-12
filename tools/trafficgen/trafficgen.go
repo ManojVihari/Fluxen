@@ -7,22 +7,25 @@
 // The "deliberately injected inefficiency" is a large share of requests
 // served by an expensive model despite having a token profile (small
 // input/output, no tools, no images) that a cheaper model could plausibly
-// handle — exactly the shape Phase 3's Model Cost detector will look for.
-// Phase 2 only needs this fixture to demonstrate real multi-model,
-// multi-day Application Detail data; Phase 3 is expected to tune the
-// volume/shape further once the detector's actual thresholds exist (Part
-// L Phase 3: "extend the Phase 2 fixture").
+// handle — exactly the shape Phase 3's Model Cost detector looks for.
+// Phase 3 tuned the volume (Part L Phase 3: "extend the Phase 2 fixture
+// ... so a fresh `fluxenctl seed --demo` produces traffic that crosses
+// the detector's minimum-traffic floor immediately") and now runs the
+// detector against the seeded traffic itself, so a fresh install shows a
+// real opportunity without waiting for the next scheduled detector run.
 package trafficgen
 
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fluxen/internal/auth"
+	"fluxen/internal/detect"
 	"fluxen/internal/rollup"
 	"fluxen/internal/store"
 	"fluxen/pkg/pricing"
@@ -133,6 +136,18 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, opts Options) (Result, error)
 	}
 	if err := rollup.ComputeDaily(ctx, pool, windowStart, windowEnd); err != nil {
 		return Result{}, fmt.Errorf("trafficgen: failed to compute daily rollups for seeded traffic: %w", err)
+	}
+
+	// Run the Model Cost detector against the freshly-seeded traffic
+	// immediately, same reasoning as the rollup recompute above: a fresh
+	// `fluxenctl seed --demo` must show the Aha Moment right away, not
+	// after the next scheduled detect.model_cost tick (Part L Phase 3
+	// demo scenario).
+	opportunities := store.NewOpportunities(pool)
+	runner := detect.NewRunner(apps, store.NewRollups(pool), reqs, opportunities, catalog, slog.Default())
+	runner.Now = func() time.Time { return opts.Now }
+	if err := runner.Run(ctx); err != nil {
+		return Result{}, fmt.Errorf("trafficgen: failed to run detectors for seeded traffic: %w", err)
 	}
 
 	return Result{OrgID: orgID, AppID: app.ID, AppSlug: app.Slug, RequestsGenerated: len(records)}, nil

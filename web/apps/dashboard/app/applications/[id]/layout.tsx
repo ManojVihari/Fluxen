@@ -7,10 +7,12 @@ import { api, ApiError, type Application } from "@/lib/api";
 import { ErrorBanner } from "@/components/ui";
 
 // The Application Detail shell: persistent header + tab nav (Part I.1).
-// Phase 2 wires Usage & Cost and Models to real data; Efficiency,
+// Phase 2 wired Usage & Cost and Models to real data; Phase 3 wires
+// Efficiency to "at minimum an opportunity count" (Part L Phase 3
+// frontend tasks) — the full efficiency score/ring is still Phase 7.
 // Opportunities, Policies, and Requests stay visible-but-disabled
-// placeholders (Part L Phase 2 explicit non-goals) so the eventual tab
-// set is legible without pretending those screens exist yet.
+// placeholders so the eventual tab set is legible without pretending
+// those screens exist yet.
 export default function ApplicationLayout({ children }: { children: React.ReactNode }) {
   const params = useParams<{ id: string }>();
   const pathname = usePathname();
@@ -50,7 +52,7 @@ export default function ApplicationLayout({ children }: { children: React.ReactN
   const tabs = [
     { href: base, label: "Usage & Cost", active: pathname === base },
     { href: `${base}/models`, label: "Models", active: pathname === `${base}/models` },
-    { label: "Efficiency", disabled: true },
+    { href: `${base}/efficiency`, label: "Efficiency", active: pathname === `${base}/efficiency` },
     { label: "Opportunities", disabled: true },
     { label: "Policies", disabled: true },
     { label: "Requests", disabled: true },

@@ -2,11 +2,12 @@
 // deployment target (Part B.1/B.4 of the implementation specification).
 //
 // Phase 1 added the control API (setup, auth, applications, keys) and the
-// OpenAI-compatible gateway. Phase 2 adds the in-process job scheduler
+// OpenAI-compatible gateway. Phase 2 added the in-process job scheduler
 // (Part C.7) running the rollup.hourly/rollup.daily jobs that turn raw
-// requests into the aggregates Application Detail reads. Everything else
-// — policy/cache/routing, Gemini/Ollama, detectors — arrives in later
-// phases.
+// requests into the aggregates Application Detail reads. Phase 3 adds the
+// detect.model_cost job — the Aha Moment: real traffic in, a credible
+// optimization opportunity out. Everything else — policy/cache/routing,
+// Gemini/Ollama, the other three detectors — arrives in later phases.
 package main
 
 import (
@@ -22,6 +23,7 @@ import (
 	"fluxen/internal/api"
 	"fluxen/internal/auth"
 	"fluxen/internal/config"
+	"fluxen/internal/detect"
 	"fluxen/internal/gateway"
 	"fluxen/internal/health"
 	"fluxen/internal/ingest"
@@ -80,6 +82,7 @@ func run() error {
 	users := store.NewUsers(pool)
 	requests := store.NewRequests(pool)
 	rollups := store.NewRollups(pool)
+	opportunities := store.NewOpportunities(pool)
 
 	// --- gateway ---
 	keyResolver := auth.NewResolver(keys)
@@ -105,6 +108,7 @@ func run() error {
 		Apps:            apps,
 		Keys:            keys,
 		Rollups:         rollups,
+		Opportunities:   opportunities,
 		Sessions:        auth.NewSessionStore(redisClient),
 		KeyResolver:     keyResolver,
 		DashboardOrigin: cfg.DashboardOrigin,
@@ -128,6 +132,12 @@ func run() error {
 			from, to := rollup.DailyWindow(time.Now())
 			return rollup.ComputeDaily(ctx, pool, from, to)
 		},
+	})
+	detectRunner := detect.NewRunner(apps, rollups, requests, opportunities, catalog, logger)
+	scheduler.Register(worker.Job{
+		Name:     "detect.model_cost",
+		Interval: 15 * time.Minute,
+		Run:      detectRunner.Run,
 	})
 
 	schedulerCtx, stopScheduler := context.WithCancel(context.Background())

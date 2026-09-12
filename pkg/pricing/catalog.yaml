@@ -7,25 +7,53 @@
 # (1 USD = 1_000_000 micro-USD). Phase 1 only proxies OpenAI traffic, so
 # only OpenAI models are listed; Gemini and Ollama entries arrive in
 # Phase 7 alongside those providers.
+#
+# context_window/max_output/capabilities/tier/downgrade_candidates_for
+# (Part H.1) are the Model Cost detector's only source of candidates —
+# `downgrade_candidates_for` is data, not a runtime heuristic (Part
+# G.3.1): a model declares which other model(s) it is a cheaper stand-in
+# for, and the detector only ever considers pairs listed here.
 version: "2026-09-01"
 models:
   - id: gpt-4o
     provider: openai
     input_per_mtok_micro: 2500000
     output_per_mtok_micro: 10000000
+    context_window: 128000
+    max_output: 16384
+    capabilities: [tools, vision, json_schema, streaming]
+    tier: premium
   - id: gpt-4o-2024-11-20
     provider: openai
     input_per_mtok_micro: 2500000
     output_per_mtok_micro: 10000000
+    context_window: 128000
+    max_output: 16384
+    capabilities: [tools, vision, json_schema, streaming]
+    tier: premium
   - id: gpt-4o-mini
     provider: openai
     input_per_mtok_micro: 150000
     output_per_mtok_micro: 600000
+    context_window: 128000
+    max_output: 16384
+    capabilities: [tools, vision, json_schema, streaming]
+    tier: economy
+    downgrade_candidates_for: [gpt-4o, gpt-4o-2024-11-20]
   - id: gpt-4-turbo
     provider: openai
     input_per_mtok_micro: 10000000
     output_per_mtok_micro: 30000000
+    context_window: 128000
+    max_output: 4096
+    capabilities: [tools, vision, json_schema, streaming]
+    tier: premium
   - id: gpt-3.5-turbo
     provider: openai
     input_per_mtok_micro: 500000
     output_per_mtok_micro: 1500000
+    context_window: 16385
+    max_output: 4096
+    capabilities: [tools, streaming]
+    tier: economy
+    downgrade_candidates_for: [gpt-4-turbo]

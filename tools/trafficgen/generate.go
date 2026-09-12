@@ -39,9 +39,14 @@ const premiumShare = 0.75
 const errorRate = 0.02
 
 // requestsPerDayMin/Max bound how many requests are generated for each
-// day, randomized so the timeseries isn't a flat line.
-const requestsPerDayMin = 120
-const requestsPerDayMax = 260
+// day, randomized so the timeseries isn't a flat line. Sized (Part L
+// Phase 3 backend tasks: "a fresh install must not need to wait days to
+// see the Aha Moment") so the trailing-14-day window a fresh seed
+// produces clears the Model Cost detector's suppression floors (Part
+// G.2) with comfortable margin against random-seed variance, not just on
+// average.
+const requestsPerDayMin = 150
+const requestsPerDayMax = 300
 
 // GenerateRecords builds the full set of synthetic UsageRecords for
 // opts.Days trailing days, ending on opts.Now. It is a pure function —

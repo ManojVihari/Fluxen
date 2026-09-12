@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -80,6 +81,59 @@ func (r *Requests) InsertBatch(ctx context.Context, records []types.UsageRecord)
 		}
 	}
 	return nil
+}
+
+// ModelCostFact is the minimal per-request shape the Model Cost detector
+// (internal/detect) reads — deliberately not the full requests row, so
+// the detector's own pure logic can be unit-tested against a hand-built
+// fixture without a database (Rule 8).
+type ModelCostFact struct {
+	RequestedModel string
+	Provider       string
+	InputTokens    int
+	OutputTokens   int
+	HasTools       bool
+	HasToolCalls   bool
+	HasImages      bool
+	JSONMode       bool
+	CostMicro      int64
+	CostStatus     types.CostStatus
+}
+
+// ModelCostFacts returns every successfully-served request for an
+// application in [since, until) — the trailing-14-day window Part G.3.1
+// detects against. Only status='ok' requests are considered: an errored
+// request never completed, so its token/cost figures don't represent
+// real served traffic the detector should reason about.
+func (r *Requests) ModelCostFacts(ctx context.Context, appID types.AppID, since, until time.Time) ([]ModelCostFact, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT requested_model, provider, input_tokens, output_tokens,
+		       has_tools, has_tool_calls, has_images, json_mode,
+		       cost_micro, cost_status
+		FROM requests
+		WHERE app_id = $1 AND started_at >= $2 AND started_at < $3 AND status = 'ok'
+	`, appID, since, until)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to load model-cost facts: %w", err)
+	}
+	defer rows.Close()
+
+	var facts []ModelCostFact
+	for rows.Next() {
+		var f ModelCostFact
+		var costStatus string
+		if err := rows.Scan(&f.RequestedModel, &f.Provider, &f.InputTokens, &f.OutputTokens,
+			&f.HasTools, &f.HasToolCalls, &f.HasImages, &f.JSONMode,
+			&f.CostMicro, &costStatus); err != nil {
+			return nil, fmt.Errorf("store: failed to scan model-cost fact: %w", err)
+		}
+		f.CostStatus = types.CostStatus(costStatus)
+		facts = append(facts, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: failed to load model-cost facts: %w", err)
+	}
+	return facts, nil
 }
 
 func nullableString(s string) any {

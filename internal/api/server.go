@@ -1,9 +1,10 @@
 // Package api is the control-plane HTTP API the dashboard talks to
 // (Part C.1: "control-plane HTTP API (dashboard-facing)"). Phase 1 added
-// setup/auth/applications/keys; Phase 2 adds the per-application
-// summary/timeseries/models rollup reads Application Detail needs —
-// everything else (overview, requests, opportunities, ...) arrives in
-// later phases.
+// setup/auth/applications/keys; Phase 2 added the per-application
+// summary/timeseries/models rollup reads Application Detail needs; Phase
+// 3 adds read access to detector output (opportunities) — everything
+// else (overview, requests, simulate/apply/measure, ...) arrives in later
+// phases.
 package api
 
 import (
@@ -19,12 +20,13 @@ import (
 
 // Server holds the control-plane API's dependencies.
 type Server struct {
-	Orgs     *store.Organizations
-	Users    *store.Users
-	Apps     *store.Applications
-	Keys     *store.APIKeys
-	Rollups  *store.Rollups
-	Sessions *auth.SessionStore
+	Orgs          *store.Organizations
+	Users         *store.Users
+	Apps          *store.Applications
+	Keys          *store.APIKeys
+	Rollups       *store.Rollups
+	Opportunities *store.Opportunities
+	Sessions      *auth.SessionStore
 
 	// KeyResolver is the gateway's own resolver. In Phase 1's combined
 	// binary (cmd/fluxen) the API and gateway share one process, so a key
@@ -76,6 +78,10 @@ func (s *Server) Router() chi.Router {
 			r.Get("/applications/{appID}/models", s.handleApplicationModels)
 			r.Post("/applications/{appID}/keys", s.handleCreateKey)
 			r.Delete("/keys/{keyID}", s.handleRevokeKey)
+
+			r.Get("/opportunities", s.handleListOpportunities)
+			r.Get("/opportunities/{opportunityID}", s.handleGetOpportunity)
+			r.Post("/opportunities/{opportunityID}/review", s.handleReviewOpportunity)
 		})
 	})
 

@@ -74,6 +74,9 @@ export default function ApplicationsPage() {
           <p className="text-sm text-slate-500">The unit of optimization in Fluxen.</p>
         </div>
         <div className="flex gap-2">
+          <Link href="/optimizations">
+            <Button variant="secondary">Optimizations</Button>
+          </Link>
           <Link href="/applications/new">
             <Button>New application</Button>
           </Link>

@@ -77,6 +77,37 @@ func (a *Applications) ListByOrg(ctx context.Context, orgID types.OrgID) ([]Appl
 	return apps, nil
 }
 
+// ListAll returns every application across every organization — used by
+// the detector runner (internal/detect), which walks all traffic on a
+// schedule rather than per-org. V1 is single-org per deployment (Part
+// A), so this is not the fan-out concern it would be in a multi-tenant
+// product, but it stays org-agnostic here rather than assuming exactly
+// one org exists.
+func (a *Applications) ListAll(ctx context.Context) ([]Application, error) {
+	rows, err := a.pool.Query(ctx, `
+		SELECT id, org_id, slug, name, status, created_at, first_seen_at, last_seen_at
+		FROM applications
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to list all applications: %w", err)
+	}
+	defer rows.Close()
+
+	var apps []Application
+	for rows.Next() {
+		var app Application
+		if err := rows.Scan(&app.ID, &app.OrgID, &app.Slug, &app.Name, &app.Status, &app.CreatedAt, &app.FirstSeenAt, &app.LastSeenAt); err != nil {
+			return nil, fmt.Errorf("store: failed to scan application: %w", err)
+		}
+		apps = append(apps, app)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: failed to list all applications: %w", err)
+	}
+	return apps, nil
+}
+
 // Get fetches one application by id, scoped to an org so one org can never
 // read another's application by guessing an id.
 func (a *Applications) Get(ctx context.Context, orgID types.OrgID, id types.AppID) (Application, error) {

@@ -106,6 +106,16 @@ export const api = {
     get<DailyPoint[]>(`/api/v1/applications/${appId}/timeseries?range=${range}`),
   applicationModels: (appId: string, range: RangeValue) =>
     get<ModelBreakdown[]>(`/api/v1/applications/${appId}/models?range=${range}`),
+
+  listOpportunities: (params?: { appId?: string; status?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.appId) q.set("app_id", params.appId);
+    if (params?.status) q.set("status", params.status);
+    const qs = q.toString();
+    return get<Opportunity[]>(`/api/v1/opportunities${qs ? `?${qs}` : ""}`);
+  },
+  getOpportunity: (id: string) => get<Opportunity>(`/api/v1/opportunities/${id}`),
+  reviewOpportunity: (id: string) => post<Opportunity>(`/api/v1/opportunities/${id}/review`),
 };
 
 // Matches the ?range= values internal/api/timerange.go accepts.
@@ -162,6 +172,62 @@ export interface ApiKey {
   prefix: string;
   key: string;
   created_at: string;
+}
+
+// Opportunity mirrors internal/api's opportunityResponse (Part L Phase 3).
+// evidence/recommendation are passed through as untyped JSON on the wire —
+// ModelCostEvidence/ModelCostRecommendation narrow them for the one kind
+// Phase 3 ships; a later phase's detector kinds would add their own
+// narrowing types alongside these, not replace this shape.
+export interface Opportunity {
+  id: string;
+  app_id: string;
+  kind: string;
+  status: string;
+  severity?: string;
+  title: string;
+  summary: string;
+  window_start: string;
+  window_end: string;
+  sample_requests: number;
+  current_cost_micro: number;
+  projected_cost_micro: number;
+  savings_micro: number;
+  savings_pct: number;
+  value_type: string;
+  confidence: "low" | "medium" | "high";
+  confidence_score: number;
+  evidence: unknown;
+  recommendation: unknown;
+  detector_version: string;
+  detected_at: string;
+  reviewed_at?: string;
+  dismissed_at?: string;
+  dismiss_reason?: string;
+  last_seen_at: string;
+}
+
+export interface ModelCostEvidence {
+  current_model: string;
+  candidate_model: string;
+  total_requests: number;
+  eligible_requests: number;
+  eligible_fraction: number;
+  exclusion_breakdown: Record<string, number>;
+  input_tokens_p50: number;
+  input_tokens_p95: number;
+  output_tokens_p50: number;
+  output_tokens_p95: number;
+  price_ratio: number;
+  window_days: number;
+  caveat: string;
+}
+
+export interface ModelCostRecommendation {
+  action: string;
+  current_model: string;
+  candidate_model: string;
+  recommended_traffic_weight: number;
 }
 
 // The gateway itself (not the control API) — what applications actually

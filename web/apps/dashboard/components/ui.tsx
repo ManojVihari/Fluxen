@@ -104,12 +104,23 @@ export function EmptyState({ children }: { children: ReactNode }) {
   );
 }
 
-export function Badge({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "warn" }) {
+export function Badge({
+  children,
+  tone = "neutral",
+  title,
+}: {
+  children: ReactNode;
+  tone?: "neutral" | "warn" | "good";
+  title?: string;
+}) {
   const tones: Record<string, string> = {
     neutral: "bg-slate-100 text-slate-600",
     warn: "bg-amber-100 text-amber-700",
+    good: "bg-emerald-100 text-emerald-700",
   };
   return (
-    <span className={`rounded-full px-2 py-0.5 text-xs ${tones[tone]}`}>{children}</span>
+    <span title={title} className={`rounded-full px-2 py-0.5 text-xs ${tones[tone]}`}>
+      {children}
+    </span>
   );
 }
