@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"fluxen/internal/policy"
 	"fluxen/internal/store"
 	"fluxen/pkg/types"
 )
@@ -124,6 +125,88 @@ func (s *Server) handleGetOpportunity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toOpportunityResponse(o))
+}
+
+type applyRoutingRequest struct {
+	FromModel string  `json:"from_model"`
+	ToModel   string  `json:"to_model"`
+	Weight    float64 `json:"weight"`
+	Sticky    bool    `json:"sticky"`
+}
+
+type applyOpportunityRequest struct {
+	Confirm      bool                `json:"confirm"`
+	SimulationID string              `json:"simulation_id"`
+	Routing      applyRoutingRequest `json:"routing"`
+	Note         string              `json:"note,omitempty"`
+}
+
+// handleApplyOpportunity is the confirm dialog's real action (Part I.2,
+// Rule 19): validates the target policy, writes it as a new version with
+// a linked history entry, transitions the opportunity to applied, and
+// invalidates the gateway's cached policy snapshot. Requires
+// confirm: true in the body — Fluxen never mutates production
+// autonomously (Rule 19), and this endpoint has no other way to run.
+func (s *Server) handleApplyOpportunity(w http.ResponseWriter, r *http.Request) {
+	uc, _ := userFromRequest(r)
+	opportunityID := chi.URLParam(r, "opportunityID")
+
+	var req applyOpportunityRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if !req.Confirm {
+		writeError(w, http.StatusBadRequest, "confirm must be true to apply a policy change")
+		return
+	}
+	if req.SimulationID == "" {
+		writeError(w, http.StatusBadRequest, "simulation_id is required")
+		return
+	}
+
+	// The opportunity itself carries its app_id — no {appID} URL segment
+	// exists on this route, so it's looked up here (still org-scoped)
+	// rather than via mustOwnApplication.
+	opp, err := s.Opportunities.Get(r.Context(), uc.OrgID, opportunityID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "opportunity not found")
+			return
+		}
+		s.Logger.Error("api: failed to look up opportunity", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	userID := uc.UserID
+	rec, err := s.Applier.Apply(r.Context(), policy.ApplyInput{
+		OrgID: uc.OrgID, AppID: opp.AppID, OpportunityID: opportunityID, SimulationID: req.SimulationID,
+		Routing: policy.RoutingPatch{
+			FromModel: req.Routing.FromModel, ToModel: req.Routing.ToModel,
+			Weight: req.Routing.Weight, Sticky: req.Routing.Sticky,
+		},
+		Note: req.Note, ChangedBy: &userID,
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "opportunity or simulation not found")
+			return
+		}
+		if errors.Is(err, policy.ErrSimulationRequired) {
+			writeError(w, http.StatusBadRequest, "applying requires an existing simulation for this opportunity")
+			return
+		}
+		if errors.Is(err, store.ErrNotApplicable) {
+			writeError(w, http.StatusConflict, "this opportunity is not in an applicable state")
+			return
+		}
+		s.Logger.Error("api: failed to apply opportunity", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toPolicyResponse(rec))
 }
 
 // handleReviewOpportunity transitions open -> reviewed (Part G.1). The

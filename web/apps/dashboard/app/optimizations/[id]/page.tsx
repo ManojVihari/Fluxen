@@ -367,17 +367,117 @@ function ModelMixSimulateSection({ opportunity }: { opportunity: Opportunity }) 
           </div>
         )}
 
-        <div className="flex gap-2 border-t border-slate-100 pt-3">
-          <button
-            disabled
-            title={result ? "Apply arrives in the next phase" : "Run a simulation first"}
-            className="cursor-not-allowed rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-400"
-          >
-            Apply
-          </button>
+        <div className="border-t border-slate-100 pt-3">
+          {result ? (
+            <ApplyAction opportunity={opportunity} simulation={result} weight={weight} recommendation={recommendation} />
+          ) : (
+            <button
+              disabled
+              title="Run a simulation first"
+              className="cursor-not-allowed rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-400"
+            >
+              Apply
+            </button>
+          )}
         </div>
       </div>
     </Section>
+  );
+}
+
+// ApplyAction is Rule 19's confirm dialog: the application's own slug
+// must be re-typed for a routing change ("irreversible-feeling actions
+// get friction on purpose") before POST .../apply fires with
+// confirm: true.
+function ApplyAction({
+  opportunity,
+  simulation,
+  weight,
+  recommendation,
+}: {
+  opportunity: Opportunity;
+  simulation: Simulation;
+  weight: number;
+  recommendation: ModelCostRecommendation;
+}) {
+  const [open, setOpen] = useState(false);
+  const [slug, setSlug] = useState("");
+  const [appSlug, setAppSlug] = useState<string | null>(null);
+  const [applying, setApplying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [applied, setApplied] = useState(false);
+
+  useEffect(() => {
+    if (!open || appSlug) return;
+    api
+      .listApplications()
+      .then((apps) => setAppSlug(apps.find((a) => a.id === opportunity.app_id)?.slug ?? null))
+      .catch(() => setAppSlug(null));
+  }, [open, appSlug, opportunity.app_id]);
+
+  async function confirmApply() {
+    if (!appSlug || slug !== appSlug) return;
+    setApplying(true);
+    setError(null);
+    try {
+      await api.applyOpportunity(opportunity.id, {
+        confirm: true,
+        simulation_id: simulation.id,
+        routing: {
+          from_model: recommendation.current_model, to_model: recommendation.candidate_model,
+          weight, sticky: true,
+        },
+      });
+      setApplied(true);
+      setOpen(false);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to apply.");
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  if (applied) {
+    return (
+      <div className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+        Applied. Fluxen is now routing {formatPercent(weight)} of {recommendation.current_model} traffic to{" "}
+        {recommendation.candidate_model}.{" "}
+        <Link href={`/applications/${opportunity.app_id}/policies`} className="underline">
+          View policy
+        </Link>
+      </div>
+    );
+  }
+
+  if (!open) {
+    return <Button onClick={() => setOpen(true)}>Apply</Button>;
+  }
+
+  return (
+    <div className="rounded-md border border-slate-300 bg-slate-50 p-4">
+      <p className="mb-2 text-sm font-medium text-slate-900">Confirm applying this recommendation</p>
+      <p className="mb-3 text-xs text-slate-600">
+        This will start routing {formatPercent(weight)} of {recommendation.current_model} traffic to{" "}
+        {recommendation.candidate_model} in production. Type the application&apos;s slug (
+        <span className="font-mono">{appSlug ?? "…"}</span>) to confirm.
+      </p>
+      <ErrorBanner message={error} />
+      <input
+        className="mb-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+        value={slug}
+        onChange={(e) => setSlug(e.target.value)}
+        placeholder={appSlug ?? ""}
+        disabled={!appSlug}
+      />
+      <div className="flex gap-2">
+        <Button onClick={confirmApply} disabled={!appSlug || slug !== appSlug || applying}>
+          {applying ? "Applying…" : "Confirm apply"}
+        </Button>
+        <Button variant="secondary" onClick={() => { setOpen(false); setSlug(""); setError(null); }}>
+          Cancel
+        </Button>
+      </div>
+    </div>
   );
 }
 

@@ -200,3 +200,37 @@ func (o *Opportunities) MarkReviewed(ctx context.Context, orgID types.OrgID, id 
 	}
 	return out, nil
 }
+
+// ErrNotApplicable is returned by MarkApplied when the opportunity is
+// already applied, dismissed, stale, or reverted — Apply is only valid
+// from open/reviewed/simulated (Part G.1's lifecycle), and this method
+// is the single point that enforces it at the data layer.
+var ErrNotApplicable = fmt.Errorf("store: opportunity is not in an applicable state")
+
+// MarkApplied transitions an opportunity to 'applied' (Part G.1: "the
+// recommended (or edited) policy change has been confirmed and
+// written"). Called from inside the same transaction as the policy save
+// it accompanies is not required — the opportunity and the policy are
+// two independently-consistent records, and a failure here after a
+// successful policy save is a real (if rare) partial-failure case the
+// caller surfaces as an error rather than silently swallowing.
+func (o *Opportunities) MarkApplied(ctx context.Context, orgID types.OrgID, id string) (Opportunity, error) {
+	row := o.pool.QueryRow(ctx, `
+		UPDATE opportunities
+		SET status = 'applied'
+		WHERE org_id = $1 AND id = $2 AND status IN ('open', 'reviewed', 'simulated')
+		RETURNING `+opportunityColumns,
+		orgID, id,
+	)
+	out, err := scanOpportunity(row)
+	if err == ErrNotFound {
+		if _, getErr := o.Get(ctx, orgID, id); getErr != nil {
+			return Opportunity{}, getErr
+		}
+		return Opportunity{}, ErrNotApplicable
+	}
+	if err != nil {
+		return Opportunity{}, fmt.Errorf("store: failed to mark opportunity applied: %w", err)
+	}
+	return out, nil
+}

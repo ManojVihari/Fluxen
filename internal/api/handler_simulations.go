@@ -43,6 +43,22 @@ type cachingScenarioRequest struct {
 	MaxEntries int `json:"max_entries,omitempty"`
 }
 
+type budgetScenarioRequest struct {
+	LimitMicro int64  `json:"limit_micro"`
+	Period     string `json:"period"`
+}
+
+// budgetImpactBreakdown is deliberately not a per-model cost table like
+// the other two scenarios' breakdown — Part G.4: a budget result is
+// framed as impact, never savings, so its breakdown reports what was
+// rejected and when, not a cost comparison.
+type budgetImpactBreakdown struct {
+	BlockedRequests  int64   `json:"blocked_requests"`
+	BlockedPct       float64 `json:"blocked_pct"`
+	FirstBlockedDate *string `json:"first_blocked_date,omitempty"`
+	LastBlockedDate  *string `json:"last_blocked_date,omitempty"`
+}
+
 // simulationResponse mirrors store.Simulation. actual_cost_micro and the
 // replay counts are measured straight from real historical rows;
 // simulated_cost_micro, delta_micro, delta_pct, and
@@ -188,6 +204,28 @@ func (s *Server) handleCreateSimulation(w http.ResponseWriter, r *http.Request) 
 		})
 		affected, actualCost, simulatedCost = result.AffectedRequests, result.ActualCostMicro, result.SimulatedCostMicro
 		breakdown, assumptions = []struct{}{}, result.Assumptions
+
+	case "budget":
+		var scenarioReq budgetScenarioRequest
+		if err := json.Unmarshal(req.Scenario, &scenarioReq); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid budget scenario")
+			return
+		}
+		if scenarioReq.LimitMicro <= 0 {
+			writeError(w, http.StatusBadRequest, "budget requires a positive limit_micro")
+			return
+		}
+		result := sim.SimulateBudget(facts, sim.BudgetScenario{LimitMicro: scenarioReq.LimitMicro, Period: scenarioReq.Period})
+		affected = result.BlockedRequests
+		for _, f := range facts {
+			actualCost += f.CostMicro
+		}
+		simulatedCost = actualCost // a budget never changes what would have been spent by allowed requests
+		breakdown = budgetImpactBreakdown{
+			BlockedRequests: result.BlockedRequests, BlockedPct: result.BlockedPct,
+			FirstBlockedDate: result.FirstBlockedDate, LastBlockedDate: result.LastBlockedDate,
+		}
+		assumptions = result.Assumptions
 
 	default:
 		writeError(w, http.StatusBadRequest, "unsupported scenario type")

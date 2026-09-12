@@ -92,7 +92,10 @@ func newTestServer(t *testing.T, provider providers.Provider) (*Server, *fakeKey
 	}}
 	resolver := auth.NewResolver(lookup)
 
-	s := NewServer(resolver, provider, providers.Credential{APIKey: "sk-test"}, testCatalog(t), ingest.NewQueue(100, nil), nil)
+	s := NewServer(Server{
+		Resolver: resolver, Provider: provider, Credential: providers.Credential{APIKey: "sk-test"},
+		Catalog: testCatalog(t), Queue: ingest.NewQueue(100, nil),
+	})
 	s.Timeout = 5 * time.Second
 	return s, lookup, raw
 }

@@ -60,6 +60,13 @@ function post<T>(path: string, body?: unknown): Promise<T> {
   });
 }
 
+function put<T>(path: string, body?: unknown): Promise<T> {
+  return request<T>(path, {
+    method: "PUT",
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
 function get<T>(path: string): Promise<T> {
   return request<T>(path, { method: "GET" });
 }
@@ -120,6 +127,15 @@ export const api = {
   createSimulation: (body: CreateSimulationRequest) => post<Simulation>("/api/v1/simulations", body),
   getSimulation: (id: string) => get<Simulation>(`/api/v1/simulations/${id}`),
   listApplicationSimulations: (appId: string) => get<Simulation[]>(`/api/v1/applications/${appId}/simulations`),
+
+  getPolicy: (appId: string) => get<PolicyResponse>(`/api/v1/applications/${appId}/policy`),
+  putPolicy: (appId: string, body: PutPolicyRequest) => put<PolicyResponse>(`/api/v1/applications/${appId}/policy`, body),
+  getPolicyHistory: (appId: string) => get<PolicyHistoryEntry[]>(`/api/v1/applications/${appId}/policy/history`),
+  revertPolicy: (appId: string, body: { version: number; note?: string }) =>
+    post<PolicyResponse>(`/api/v1/applications/${appId}/policy/revert`, body),
+
+  applyOpportunity: (opportunityId: string, body: ApplyOpportunityRequest) =>
+    post<PolicyResponse>(`/api/v1/opportunities/${opportunityId}/apply`, body),
 };
 
 // Matches the ?range= values internal/api/timerange.go accepts.
@@ -285,6 +301,74 @@ export interface ModelMixBreakdownRow {
   requests: number;
   actual_cost_micro: number;
   simulated_cost_micro: number;
+}
+
+// PolicyDocument mirrors pkg/policy.PolicyDocument (Part L Phase 5) —
+// every control optional and nil/disabled by default, matching the
+// gateway's own "no policy = Phase 1 behavior" semantics.
+export interface RoutingPolicy {
+  enabled: boolean;
+  from_model: string;
+  to_model: string;
+  weight: number;
+  sticky: boolean;
+}
+export interface CachingPolicy {
+  enabled: boolean;
+  ttl_seconds: number;
+}
+export interface BudgetPolicy {
+  enabled: boolean;
+  period: "daily" | "monthly";
+  limit_micro: number;
+  mode: "hard" | "soft";
+}
+export interface RateLimitPolicy {
+  enabled: boolean;
+  requests_per_minute: number;
+}
+export interface ModelRestrictionPolicy {
+  enabled: boolean;
+  allowed_models: string[];
+}
+export interface PolicyDocument {
+  routing?: RoutingPolicy | null;
+  caching?: CachingPolicy | null;
+  budget?: BudgetPolicy | null;
+  rate_limit?: RateLimitPolicy | null;
+  model_restriction?: ModelRestrictionPolicy | null;
+}
+
+export interface PolicyResponse {
+  app_id: string;
+  version: number;
+  document: PolicyDocument;
+  updated_at: string;
+}
+
+export interface PutPolicyRequest {
+  document: PolicyDocument;
+  expected_version: number;
+  note?: string;
+}
+
+export interface PolicyHistoryEntry {
+  id: string;
+  version: number;
+  document: PolicyDocument;
+  diff: Record<string, { old: unknown; new: unknown }>;
+  change_source: "user" | "opportunity" | "revert";
+  opportunity_id?: string;
+  simulation_id?: string;
+  note?: string;
+  changed_at: string;
+}
+
+export interface ApplyOpportunityRequest {
+  confirm: boolean;
+  simulation_id: string;
+  routing: { from_model: string; to_model: string; weight: number; sticky: boolean };
+  note?: string;
 }
 
 // The gateway itself (not the control API) — what applications actually

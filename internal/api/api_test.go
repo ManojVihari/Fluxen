@@ -18,6 +18,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"fluxen/internal/auth"
+	"fluxen/internal/policy"
 	"fluxen/internal/store"
 	"fluxen/pkg/pricing"
 )
@@ -89,6 +90,9 @@ func newTestEnv(t *testing.T) (*Server, *http.Client, string, *pgxpool.Pool) {
 
 	apps := store.NewApplications(pool)
 	keys := store.NewAPIKeys(pool)
+	opportunities := store.NewOpportunities(pool)
+	simulations := store.NewSimulations(pool)
+	policyStore := policy.NewStore(pool)
 	catalog, err := pricing.LoadEmbedded()
 	if err != nil {
 		t.Fatalf("failed to load pricing catalog: %v", err)
@@ -100,10 +104,14 @@ func newTestEnv(t *testing.T) (*Server, *http.Client, string, *pgxpool.Pool) {
 		Keys:          keys,
 		Requests:      store.NewRequests(pool),
 		Rollups:       store.NewRollups(pool),
-		Opportunities: store.NewOpportunities(pool),
-		Simulations:   store.NewSimulations(pool),
-		Catalog:       catalog,
-		Sessions:      auth.NewSessionStore(redisClient),
+		Opportunities: opportunities,
+		Simulations:   simulations,
+		Policies:      policyStore,
+		Applier: &policy.Applier{
+			Policies: policyStore, Opportunities: opportunities, Simulations: simulations,
+		},
+		Catalog:  catalog,
+		Sessions: auth.NewSessionStore(redisClient),
 	})
 
 	ts := httptest.NewServer(srv.Router())

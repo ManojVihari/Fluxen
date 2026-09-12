@@ -7,10 +7,10 @@ import { api, ApiError, type Application } from "@/lib/api";
 import { ErrorBanner } from "@/components/ui";
 
 // The Application Detail shell: persistent header + tab nav (Part I.1).
-// Phase 2 wired Usage & Cost and Models to real data; Phase 3 wires
-// Efficiency to "at minimum an opportunity count" (Part L Phase 3
-// frontend tasks) — the full efficiency score/ring is still Phase 7.
-// Opportunities, Policies, and Requests stay visible-but-disabled
+// Phase 2 wired Usage & Cost and Models to real data; Phase 3 wired
+// Efficiency to "at minimum an opportunity count" (the full efficiency
+// score/ring is still Phase 7); Phase 5 wires Policies to the real
+// editor (Part I.4). Opportunities and Requests stay visible-but-disabled
 // placeholders so the eventual tab set is legible without pretending
 // those screens exist yet.
 export default function ApplicationLayout({ children }: { children: React.ReactNode }) {
@@ -54,7 +54,7 @@ export default function ApplicationLayout({ children }: { children: React.ReactN
     { href: `${base}/models`, label: "Models", active: pathname === `${base}/models` },
     { href: `${base}/efficiency`, label: "Efficiency", active: pathname === `${base}/efficiency` },
     { label: "Opportunities", disabled: true },
-    { label: "Policies", disabled: true },
+    { href: `${base}/policies`, label: "Policies", active: pathname === `${base}/policies` },
     { label: "Requests", disabled: true },
     { href: `${base}/connect`, label: "Keys", active: pathname === `${base}/connect` },
   ];

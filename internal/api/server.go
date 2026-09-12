@@ -2,10 +2,12 @@
 // (Part C.1: "control-plane HTTP API (dashboard-facing)"). Phase 1 added
 // setup/auth/applications/keys; Phase 2 added the per-application
 // summary/timeseries/models rollup reads Application Detail needs; Phase
-// 3 added read access to detector output (opportunities); Phase 4 adds
+// 3 added read access to detector output (opportunities); Phase 4 added
 // simulations (replay a scenario against real history, read-only,
-// production untouched) — everything else (overview, requests,
-// apply/measure, ...) arrives in later phases.
+// production untouched); Phase 5 adds the policy editor and the Apply
+// action that turns a proven recommendation into a real, enforced
+// change — everything else (overview, requests, measure, ...) arrives
+// in later phases.
 package api
 
 import (
@@ -16,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"fluxen/internal/auth"
+	"fluxen/internal/policy"
 	"fluxen/internal/store"
 	"fluxen/pkg/pricing"
 )
@@ -31,6 +34,20 @@ type Server struct {
 	Opportunities *store.Opportunities
 	Simulations   *store.Simulations
 	Sessions      *auth.SessionStore
+
+	// Policies is the direct read/write path for GET/PUT policy and
+	// history (Part I.4's editor). Applier is the Apply-button
+	// transaction (Part G.5) — it wraps Policies plus Opportunities and
+	// Simulations, so the handler layer doesn't have to orchestrate that
+	// transaction itself.
+	Policies *policy.Store
+	Applier  *policy.Applier
+	// PolicySnapshot is the gateway's in-process cache — invalidated
+	// here too (not just by Applier.Apply) so a direct PUT/revert
+	// through the editor takes effect immediately, the same as Apply
+	// does. Nil-safe: a deployment without a live gateway in this
+	// process (or a test) simply skips invalidation.
+	PolicySnapshot *policy.Snapshot
 
 	// Catalog prices simulation scenarios via the exact same
 	// pkg/pricing.Calculate function the gateway uses (Rule 9) — never a
@@ -91,10 +108,16 @@ func (s *Server) Router() chi.Router {
 			r.Get("/opportunities", s.handleListOpportunities)
 			r.Get("/opportunities/{opportunityID}", s.handleGetOpportunity)
 			r.Post("/opportunities/{opportunityID}/review", s.handleReviewOpportunity)
+			r.Post("/opportunities/{opportunityID}/apply", s.handleApplyOpportunity)
 
 			r.Post("/simulations", s.handleCreateSimulation)
 			r.Get("/simulations/{simulationID}", s.handleGetSimulation)
 			r.Get("/applications/{appID}/simulations", s.handleListApplicationSimulations)
+
+			r.Get("/applications/{appID}/policy", s.handleGetPolicy)
+			r.Put("/applications/{appID}/policy", s.handlePutPolicy)
+			r.Get("/applications/{appID}/policy/history", s.handlePolicyHistory)
+			r.Post("/applications/{appID}/policy/revert", s.handleRevertPolicy)
 		})
 	})
 
@@ -105,7 +128,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", s.DashboardOrigin)
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		next.ServeHTTP(w, r)
 	})

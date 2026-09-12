@@ -14,7 +14,9 @@ import (
 // upstream stream to the client immediately, flush after every chunk,
 // never buffer the full body, and still produce a UsageRecord on every
 // exit path — including a client disconnect, which still cost real money
-// upstream.
+// upstream. Since Phase 5, it also accumulates the raw chunks so a
+// successful response can populate the cache verbatim (internal/cache's
+// SSE replay needs the exact bytes, not a re-synthesized stream).
 func (s *Server) handleChatStream(ctx context.Context, w http.ResponseWriter, r *http.Request, req *types.CanonicalRequest, rb *recordBuilder) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -44,6 +46,9 @@ func (s *Server) handleChatStream(ctx context.Context, w http.ResponseWriter, r 
 	var errCode, errMsg string
 	httpStatus := http.StatusOK
 
+	cacheable := s.Cache != nil && rb.policyDoc.Caching != nil && rb.policyDoc.Caching.Enabled
+	var chunks [][]byte
+
 	for {
 		chunk, err := sr.Next()
 		if err != nil {
@@ -67,6 +72,9 @@ func (s *Server) handleChatStream(ctx context.Context, w http.ResponseWriter, r 
 			break
 		}
 		flusher.Flush()
+		if cacheable {
+			chunks = append(chunks, chunk)
+		}
 
 		if firstChunk {
 			ms := int(time.Since(rb.startedAt) / time.Millisecond)
@@ -93,6 +101,13 @@ done:
 		httpStatus = http.StatusGatewayTimeout
 	}
 
-	rec := rb.finalize(s.Catalog, sr.Usage(), rb.requestedModel, status, httpStatus, errCode, errMsg, ttft)
+	// req.Model is the actually-routed model (Phase 5 may have rerouted
+	// it away from rb.requestedModel) — pricing must reflect what was
+	// really called, exactly like the non-streaming path already does
+	// via resp.Model.
+	rec := rb.finalize(s.Catalog, sr.Usage(), req.Model, status, httpStatus, errCode, errMsg, ttft)
 	s.emit(rec)
+	if status == "ok" {
+		s.afterSuccess(ctx, rb, rec, nil, chunks)
+	}
 }

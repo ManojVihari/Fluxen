@@ -4,10 +4,13 @@
 // Phase 1 added the control API (setup, auth, applications, keys) and the
 // OpenAI-compatible gateway. Phase 2 added the in-process job scheduler
 // (Part C.7) running the rollup.hourly/rollup.daily jobs that turn raw
-// requests into the aggregates Application Detail reads. Phase 3 adds the
-// detect.model_cost job — the Aha Moment: real traffic in, a credible
-// optimization opportunity out. Everything else — policy/cache/routing,
-// Gemini/Ollama, the other three detectors — arrives in later phases.
+// requests into the aggregates Application Detail reads. Phase 3 added
+// the detect.model_cost job — the Aha Moment: real traffic in, a
+// credible optimization opportunity out. Phase 5 wires the five control
+// surfaces (model routing, exact caching, budget, rate limit, model
+// restriction) into the live gateway pipeline for real, replacing the
+// no-op stages every earlier phase ran with. Gemini/Ollama and the other
+// three detectors arrive in later phases.
 package main
 
 import (
@@ -22,12 +25,15 @@ import (
 
 	"fluxen/internal/api"
 	"fluxen/internal/auth"
+	"fluxen/internal/cache"
 	"fluxen/internal/config"
 	"fluxen/internal/detect"
 	"fluxen/internal/gateway"
+	"fluxen/internal/guard"
 	"fluxen/internal/health"
 	"fluxen/internal/ingest"
 	"fluxen/internal/observability"
+	"fluxen/internal/policy"
 	"fluxen/internal/rollup"
 	"fluxen/internal/store"
 	"fluxen/internal/worker"
@@ -84,6 +90,7 @@ func run() error {
 	rollups := store.NewRollups(pool)
 	opportunities := store.NewOpportunities(pool)
 	simulations := store.NewSimulations(pool)
+	policyStore := policy.NewStore(pool)
 
 	// --- gateway ---
 	keyResolver := auth.NewResolver(keys)
@@ -98,9 +105,27 @@ func run() error {
 		close(writerDone)
 	}()
 
+	// --- policy (Part L Phase 5) ---
+	policySnapshot := policy.NewSnapshot(policyStore, redisClient, logger)
+	snapshotCtx, stopSnapshotSubscribe := context.WithCancel(context.Background())
+	defer stopSnapshotSubscribe() // idempotent; covers every early-return path below
+	go policySnapshot.Subscribe(snapshotCtx)
+
+	rateLimiter := guard.NewRateLimiter(redisClient, logger)
+	budgetGuard := guard.NewBudgetGuard(redisClient, logger)
+	cacheStore := cache.NewStore(redisClient, logger)
+
+	applier := &policy.Applier{
+		Policies: policyStore, Opportunities: opportunities, Simulations: simulations, Snapshot: policySnapshot,
+	}
+
 	var provider providers.Provider = openai.NewClient(nil)
 	cred := providers.Credential{APIKey: cfg.OpenAIAPIKey, BaseURL: cfg.OpenAIBaseURL}
-	gatewaySrv := gateway.NewServer(keyResolver, provider, cred, catalog, queue, logger)
+	gatewaySrv := gateway.NewServer(gateway.Server{
+		Resolver: keyResolver, Provider: provider, Credential: cred, Catalog: catalog, Queue: queue,
+		Policy: policySnapshot, RateLimiter: rateLimiter, BudgetGuard: budgetGuard, Cache: cacheStore,
+		Logger: logger,
+	})
 
 	// --- control API ---
 	apiSrv := api.NewServer(api.Server{
@@ -112,6 +137,9 @@ func run() error {
 		Rollups:         rollups,
 		Opportunities:   opportunities,
 		Simulations:     simulations,
+		Policies:        policyStore,
+		Applier:         applier,
+		PolicySnapshot:  policySnapshot,
 		Catalog:         catalog,
 		Sessions:        auth.NewSessionStore(redisClient),
 		KeyResolver:     keyResolver,
