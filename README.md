@@ -9,18 +9,19 @@ Fluxen is a self-hosted AI traffic gateway and optimization platform. See:
 
 ## Current status
 
-**Phase 0 — Foundation**, **Phase 1 — First AI Request**, **Phase 2 — First Understanding**, **Phase 3 — ⭐ Aha Moment (Opportunity Discovery)**, and **Phase 4 — Prove It (Simulate)** are implemented.
+**Phase 0 — Foundation**, **Phase 1 — First AI Request**, **Phase 2 — First Understanding**, **Phase 3 — ⭐ Aha Moment (Opportunity Discovery)**, **Phase 4 — Prove It (Simulate)**, and **Phase 5 — Control It (Apply)** are implemented.
 
 - Repository structure, local dev loop, Postgres + Redis connectivity with migrations, structured logging, health/readiness/metrics endpoints.
 - A control API (`/api/v1/...`) for first-run setup, login/logout, applications, and API keys.
 - An OpenAI-compatible gateway (`/v1/chat/completions`) that authenticates by API key, proxies to real OpenAI (streaming and non-streaming), and persists every request — attributed, priced, and token-counted — to Postgres.
 - An in-process background scheduler that rolls raw requests up into hourly/daily aggregates, and a control API surface (`summary`/`timeseries`/`models`) that reads them.
 - The **Model Cost detector**: finds requests served by an expensive model that a cheaper cataloged model could plausibly have handled, and turns that into a real, evidence-backed optimization opportunity — Fluxen's core "aha moment."
-- A **simulation engine**: replays real historical traffic through a model-mix or exact-caching scenario, using the exact same pricing function production uses, so a user can prove an opportunity's impact against their own history before anything changes.
-- A dashboard: setup wizard, login, applications list (with 30-day spend/requests), an Application Detail view (Usage & Cost, Models, and Efficiency tabs), a connect screen that issues an API key once with copy-paste Python/Node/curl snippets, and an Optimizations list + detail screen with a fully working Simulate section.
-- `fluxenctl seed --demo` — seeds a demo organization, a `document-ai` application, ~30 days of realistic synthetic traffic (with a deliberately over-used premium model), and immediately runs the Model Cost detector against it, so a fresh install shows a real opportunity — and a runnable simulation — without waiting.
+- A **simulation engine**: replays real historical traffic through a model-mix, exact-caching, or budget-impact scenario, using the exact same pricing function production uses, so a user can prove an opportunity's impact against their own history before anything changes.
+- A real **control surface**: model routing, exact caching, budget, rate limiting, and model restriction — all five now actually enforced on the live gateway, versioned and diffed in policy history, and applicable straight from a proven recommendation.
+- A dashboard: setup wizard, login, applications list, an Application Detail view (Usage & Cost, Models, Efficiency, and now **Policies** tabs), a connect screen, and an Optimizations list + detail screen where Simulate and Apply are both fully wired end to end.
+- `fluxenctl seed --demo` — seeds a demo organization, a `document-ai` application, ~30 days of realistic synthetic traffic, and immediately runs the Model Cost detector against it, so a fresh install shows a real opportunity — and a runnable simulation — without waiting.
 
-Not yet implemented (later phases, per the spec): budget simulation, Apply/Measure, the other three detectors (repeated request, token efficiency, traffic anomaly), efficiency score, Overview page, Requests investigation screen, or Policies (Phases 5–7), and Gemini/Ollama/caching enforcement/rate limits/budgets/model routing (Phases 5, 7).
+Not yet implemented (later phases, per the spec): Measure (baseline freeze/verdict/revert), the other three detectors (repeated request, token efficiency, traffic anomaly), efficiency score, Overview page, Requests investigation screen (Phases 6–7), and Gemini/Ollama (Phase 7).
 
 ### What's new in Phase 2
 
@@ -63,6 +64,22 @@ Phase 4's goal is: let the user prove an opportunity's impact using their own hi
 | `db/migrations/00006` | The `simulations` table (Part E.1) — append-only, one row per run. |
 | `POST /api/v1/simulations`, `GET /api/v1/simulations/{id}`, `GET /api/v1/applications/{id}/simulations` | Runs synchronously (replay at V1 scale completes well within a request) and persists the result. `actual_cost_micro`/`replayed_requests` are measured straight from real rows; `simulated_cost_micro`/`delta_micro`/`projected_monthly_savings_micro` are `value_type: "estimated"` (Rule 17). |
 | Optimizations detail page's Simulate section | Now fully functional for model-cost opportunities: a traffic-weight slider pre-filled from the opportunity's own recommendation, a real "Run simulation" call, and a result view — current vs. simulated cost, delta, affected-request count, per-model breakdown, and the fixed ±15% token-count assumption. Apply stays visibly disabled (Phase 5). |
+
+### What's new in Phase 5
+
+Phase 5's goal is: let the user safely act on the Aha Moment's recommendation, and have Fluxen actually enforce it. This phase added:
+
+| Area | What it does |
+|---|---|
+| `pkg/policy` | The `PolicyDocument` schema for all five controls (model routing, exact caching, budget, rate limit, model restriction) and the pure `Evaluate`/`EvaluateBudget` functions — the same functions internal/sim's budget scenario and the live gateway both call (Rule 9), never duplicated between them. |
+| `internal/policy` | The Postgres-backed store (optimistic-concurrency versioned saves, append-only history, diff-before-save), an in-process snapshot cache (5s TTL + Redis pub/sub invalidation for a future split deployment), and the `Applier` — the one apply transaction: validate, save with a linked opportunity/simulation history entry, transition the opportunity to `applied`, invalidate the cache. |
+| `internal/guard` | Rate limiting (a Redis fixed-window counter) and budget enforcement (a Redis period-spend counter), both **fail-open** if Redis is unreachable — a control's own infra hiccup must never become an outage for real traffic. |
+| `internal/cache` | Exact-match response caching, live: a Redis-backed store keyed by the cache key Phase 4 introduced, with byte-for-byte SSE replay for cached streaming responses. |
+| Live gateway pipeline | All five controls now actually run on every request: model restriction and routing are pure decisions (`pkg/policy.Evaluate`); rate limit and budget are checked before calling the provider; a cache hit skips the provider call entirely. An app with no policy still behaves exactly like Phase 1 — nothing is enforced unless explicitly configured. |
+| `internal/sim`'s budget scenario | The third and final Part G.4 scenario, deferred from Phase 4 to build alongside the control it simulates: replays chronologically and reports what traffic **would have been rejected** — framed as impact, never as savings (a budget is a control, not an optimization). |
+| `db/migrations/00007` | `policies` (current document per app) and `policy_history` (every mutation, append-only, linked to the opportunity/simulation that caused it when applicable). |
+| `POST /opportunities/{id}/apply`, `GET/PUT .../policy`, `GET .../policy/history`, `POST .../policy/revert` | The real Apply transaction and the direct policy editor's CRUD, both funneling through the same versioned save path. |
+| Policies tab + Apply confirmation dialog (dashboard) | The Policies tab is no longer a placeholder — a real five-control editor with a diff-before-save and history. The Optimizations detail page's Apply button now opens a real confirm dialog requiring the application's slug to be retyped (Rule 19: friction on purpose for an irreversible-feeling change) before calling the real endpoint. |
 
 ## Quickstart (Docker Compose)
 
@@ -155,7 +172,12 @@ What each package's tests actually prove, if you want to spot-check rather than 
 | `internal/api` | The complete setup→login→create-app→issue-key→revoke→logout journey; the range-scoped rollup endpoints return exactly the seeded numbers (this is also where a same-day date-boundary bug was caught before it ever reached a demo). |
 | `internal/worker` | Jobs run immediately at boot, then on their own interval; one job's failure never stops another job or the scheduler. |
 | `internal/detect` | The eligibility predicate, confidence tiering, and conservative-split math are each correct against hand-computed fixtures. **Release-blocking:** an "expensive-model" fixture produces exactly one opportunity with internally-consistent numbers; a "clean" fixture (already on the cheap model, or genuinely needing the premium one) produces **zero**. End to end against real Postgres: the full detect → open → reviewed lifecycle works, an application below the traffic/spend floor produces nothing, and re-running the detector against unchanged traffic never creates a duplicate. |
-| `internal/sim` | Model-mix recosting and the conservative-split affected-request count are exact against hand-computed fixtures; exact-caching correctly hits within a TTL, misses once it expires (including the spec's own "six days later" example), never hits across different keys or with no key at all, and respects a size-capped LRU. **Release-blocking:** replaying real Postgres-stored requests through `pkg/pricing.Calculate` reproduces their recorded cost exactly — the 0.5% self-check floor (Part G.4). |
+| `internal/sim` | Model-mix recosting and the conservative-split affected-request count are exact against hand-computed fixtures; exact-caching correctly hits within a TTL, misses once it expires (including the spec's own "six days later" example), never hits across different keys or with no key at all, and respects a size-capped LRU; the budget scenario blocks only once a period's spend reaches its limit, never lets a blocked request's cost count, and resets cleanly across period boundaries. **Release-blocking:** replaying real Postgres-stored requests through `pkg/pricing.Calculate` reproduces their recorded cost exactly — the 0.5% self-check floor (Part G.4). |
+| `pkg/policy` | Model restriction blocks exactly the disallowed model and nothing else; percentage routing converges to the configured weight over 100k trials and sticky routing always picks the same variant for the same key; every document-validation rule (bad weight, unknown period/mode, empty allow-list, ...) is rejected. |
+| `internal/guard` | Rate limiting allows exactly up to the configured count and blocks the next request; budget blocks once (and only once) spend reaches the limit, soft mode never blocks, periods are isolated from each other; **both fail open** when Redis is unreachable. |
+| `internal/cache` | Set/Get round-trips exactly, entries expire on their TTL, different apps' entries never collide, an empty cache key never hits, streamed chunks round-trip in order. |
+| `internal/policy` | Save is version-checked (a stale `expected_version` is rejected, never silently overwritten); history records every mutation in order; `Diff` reports only the fields that actually changed. **`Applier`**: the full apply transaction end to end (policy saved, opportunity transitioned to `applied`, history linked to both the opportunity and the simulation) and rejects applying without a matching simulation. |
+| `internal/gateway` (Phase 5 additions) | Against real Postgres + Redis: model restriction returns 403 for a disallowed model and 200 for an allowed one; rate limiting returns 429 exactly once the configured limit is exceeded; budget returns 403 once the limit is reached; **a live routing split converges to its configured weight over 300 real requests through the full HTTP pipeline**; a second identical cached request hits and the fake provider is called exactly once; an application with no policy at all behaves exactly like Phase 1. |
 | `tools/trafficgen` | Generated traffic only uses cataloged (priced) models; the injected model-cost inefficiency is actually present in the output; generation is deterministic for a fixed seed; `Seed()` is idempotent end-to-end against real Postgres. |
 
 ### Manual, against the running stack
@@ -194,8 +216,18 @@ With `docker compose up --build` healthy (see Quickstart), a few things worth ch
      -d "{\"app_id\":\"$APP_ID\",\"opportunity_id\":\"$OPPORTUNITY_ID\",\"scenario\":{\"type\":\"model_mix\",\"current_model\":\"gpt-4o\",\"candidate_model\":\"gpt-4o-mini\",\"traffic_weight\":0.5}}" \
      | python3 -m json.tool
    ```
-   `actual_cost_micro × 30 ÷ 14` must equal the opportunity's own `current_cost_micro` exactly (both are the same real requests, over the same window, priced through the same function) — if that ever drifts, something in `internal/sim`/`internal/detect` has diverged from Rule 9. In the dashboard, the same "Run simulation" button on the opportunity page should show matching numbers. Apply stays visibly disabled (Phase 5).
+   `actual_cost_micro × 30 ÷ 14` must equal the opportunity's own `current_cost_micro` exactly (both are the same real requests, over the same window, priced through the same function) — if that ever drifts, something in `internal/sim`/`internal/detect` has diverged from Rule 9. In the dashboard, the same "Run simulation" button on the opportunity page should show matching numbers.
 9. **Confirm the release-blocking self-check still passes**: `go test ./internal/sim/... -run TestSelfCheck -v` — a failure here means replay no longer reproduces recorded reality and blocks the release (Part G.4/K).
+10. **Apply the recommendation and watch it actually enforce.** In the dashboard, on the opportunity page, click **Apply**, type the application's slug to confirm, and submit — or via curl:
+    ```bash
+    curl -s -b cookies.txt -X POST "http://localhost:8080/api/v1/opportunities/$OPPORTUNITY_ID/apply" \
+      -H "Content-Type: application/json" \
+      -d "{\"confirm\":true,\"simulation_id\":\"$SIMULATION_ID\",\"routing\":{\"from_model\":\"gpt-4o\",\"to_model\":\"gpt-4o-mini\",\"weight\":0.5,\"sticky\":true}}" \
+      | python3 -m json.tool
+    ```
+    Then send one real request for the `from_model` (see "Connect a real application") and confirm the JSON response's own `"model"` field comes back as the `to_model` — the policy is genuinely rerouting live traffic, not just recording an intent. `docker compose exec postgres psql ... "SELECT route_reason, route_variant, policy_version FROM requests ORDER BY started_at DESC LIMIT 1;"` should show `split`, `B`, and the new version number. The opportunity's own status should now read `applied`.
+11. **Check the Policies tab and history.** Open the application's **Policies** tab in the dashboard — it should show the routing control now enabled with the applied weight, and the history section underneath should list the apply as one entry sourced from `opportunity`, linked to both the opportunity and the simulation. Try editing a different control (e.g. enabling the rate limit) directly in the editor and saving — it should appear as a separate `user`-sourced history entry, and the routing control from the apply should be untouched.
+12. **Restart the stack** once more and confirm the applied policy is still enforced (a container restart must not lose or need to re-derive it — `internal/policy.Snapshot` reloads from Postgres on its next read).
 
 ## Local development (without Docker)
 
@@ -272,9 +304,14 @@ DELETE   /api/v1/keys/{id}
 GET      /api/v1/opportunities?status=&app_id=     detector output, newest-detected first
 GET      /api/v1/opportunities/{id}                one opportunity's full evidence/recommendation
 POST     /api/v1/opportunities/{id}/review         open -> reviewed
-POST     /api/v1/simulations                       run a model_mix or exact_caching scenario, synchronously
+POST     /api/v1/opportunities/{id}/apply          apply a proven recommendation as a new, enforced policy version
+POST     /api/v1/simulations                       run a model_mix, exact_caching, or budget scenario, synchronously
 GET      /api/v1/simulations/{id}                  one simulation's full result
 GET      /api/v1/applications/{id}/simulations     an application's simulation history, newest first
+GET      /api/v1/applications/{id}/policy          current policy document + version
+PUT      /api/v1/applications/{id}/policy          save a new version (optimistic-concurrency checked)
+GET      /api/v1/applications/{id}/policy/history  every mutation, newest first
+POST     /api/v1/applications/{id}/policy/revert   restore a prior version as a brand-new one
 ```
 
 `range` accepts `24h`, `7d`, `30d` (default), `90d`.
@@ -283,6 +320,8 @@ GET      /api/v1/applications/{id}/simulations     an application's simulation h
 
 ```text
 POST /v1/chat/completions          OpenAI-compatible, streaming and non-streaming
+                                    (as of Phase 5: policy-enforced — may reroute, cache,
+                                    rate-limit, or budget-block per the application's policy)
 ```
 
 ## Repository layout
@@ -293,11 +332,14 @@ cmd/fluxenctl        admin CLI (migrations, demo seeding)
 internal/config      env config, validated at boot
 internal/auth        password hashing, API keys, session store, key resolver
 internal/store       Postgres access: applications, api_keys, users, organizations, requests, rollups, opportunities, simulations
-internal/gateway     the OpenAI-compatible ingress: auth, pipeline, streaming
+internal/gateway     the OpenAI-compatible ingress: auth, policy, routing, cache, guard, pipeline, streaming
 internal/ingest      async bounded queue + batch writer from gateway to Postgres
 internal/rollup      idempotent hourly/daily aggregation of requests into the rollup tables
 internal/detect      the Model Cost detector, suppression/ranking rules, and the Postgres-touching Runner
-internal/sim         the simulation engine: replay, model-mix and exact-caching scenarios, the release-blocking self-check
+internal/sim         the simulation engine: replay, model-mix/exact-caching/budget scenarios, the release-blocking self-check
+internal/policy      the policy store, versioned history, in-process snapshot cache, and the Apply transaction
+internal/guard       live rate-limit and budget enforcement (Redis-backed, fail-open)
+internal/cache       live exact-match response caching (Redis-backed, SSE replay for streamed hits)
 internal/worker      the in-process background job scheduler
 internal/api         the control-plane HTTP API the dashboard talks to
 internal/health      dependency health checks (/readyz)
@@ -305,6 +347,7 @@ internal/observability  structured logging, Prometheus metrics
 pkg/types            provider-neutral request/response/usage types, exact-match cache key
 pkg/providers/openai OpenAI adapter (translation, streaming, errors)
 pkg/pricing          embedded pricing catalog + cost calculation
+pkg/policy           the PolicyDocument schema + pure Evaluate/EvaluateBudget (no I/O — shared by gateway and simulation)
 tools/trafficgen     synthetic multi-day, multi-model traffic generator (used by `fluxenctl seed`)
 db/migrations/       goose SQL migrations, embedded into the fluxen binary
 web/apps/dashboard   the authenticated product (Next.js)
