@@ -2,7 +2,10 @@
 
 **AI Traffic, Optimized.**
 
-Fluxen is a self-hosted AI traffic gateway and optimization platform. See:
+[![GitHub](https://img.shields.io/badge/GitHub-ManojVihari%2FFluxen-181717?logo=github)](https://github.com/ManojVihari/Fluxen)
+[![License](https://img.shields.io/badge/self--hosted-Docker-2496ED?logo=docker&logoColor=white)](#deploy-with-docker-recommended)
+
+Fluxen is a self-hosted AI traffic gateway and optimization platform — repo: **https://github.com/ManojVihari/Fluxen**. See:
 
 - [`Fluxen V1 — Product Requirements Document.md`](./Fluxen%20V1%20—%20Product%20Requirements%20Document.md) — what Fluxen is and why.
 - [`Fluxen V1 — Implementation Plan.md`](./Fluxen%20V1%20—%20Implementation%20Plan.md) — the developer-ready implementation specification and phased build plan. This is the primary engineering reference; read it before changing code.
@@ -20,7 +23,9 @@ Fluxen is a self-hosted AI traffic gateway and optimization platform. See:
 - Settings screens: Providers, Pricing (read-only catalog view), Users (list + invite via a one-time generated password — V1 has no email infrastructure), and Retention (the three retention knobs, enforced daily by a new `retention.enforce` job).
 - The public marketing website (`web/apps/website`): Home, Product, How it Works, Why Fluxen, Providers, Pricing, Docs.
 
-Known gaps, flagged rather than silently skipped: per-org editable pricing overrides (named in the PRD but never specified anywhere — no data model, no rule for how it interacts with pricing-history immutability); a generated OpenAPI spec (the API reference in `docs/` is hand-maintained instead); production Docker hardening, a dedicated security pass, load testing, and a scripted E2E suite are still open (next up).
+Production hardening, a security pass, load testing, and a real-browser (Playwright) E2E suite are done — see `docs/self-hosting.md`'s Security notes and Load testing sections for what was checked and fixed.
+
+Known gaps, flagged rather than silently skipped: per-org editable pricing overrides (named in the PRD but never specified anywhere — no data model, no rule for how it interacts with pricing-history immutability); a generated OpenAPI spec (the API reference in `docs/` is hand-maintained instead).
 
 - Repository structure, local dev loop, Postgres + Redis connectivity with migrations, structured logging, health/readiness/metrics endpoints.
 - A control API (`/api/v1/...`) for first-run setup, login/logout, applications, and API keys.
@@ -107,11 +112,13 @@ Phase 6's goal is: close the loop between what Fluxen estimated and what actuall
 | `fluxenctl measure check --fast-forward=<duration>` | Runs interim/final checks as of "now + duration" instead of real wall time — the demo/testing affordance the spec calls for so nobody has to wait two real weeks to see a verdict. |
 | Measure section (dashboard) | Appears on the Optimizations detail page once an opportunity has been applied: collecting/interim/final states, the baseline-vs-observed comparison, a plain-language verdict explanation, and — only on `regressed` — a Revert confirmation dialog. |
 
-## Quickstart (Docker Compose)
+## Deploy with Docker (recommended)
 
-Requires Docker and Docker Compose. No `.env` file, no exported variables, no manual key generation — every setting below has a working default.
+Requires only [Docker](https://docs.docker.com/get-docker/) and Docker Compose. No `.env` file, no exported variables, no manual key generation — every setting has a working default, whether you're running this on your laptop or a fresh cloud VM.
 
 ```bash
+git clone https://github.com/ManojVihari/Fluxen.git
+cd Fluxen
 docker compose up --build
 ```
 
@@ -269,16 +276,31 @@ With `docker compose up --build` healthy (see Quickstart), a few things worth ch
     ```
     The returned document must exactly match what the policy was *before* the apply (empty, if this was the application's first-ever policy change) — check `policy_history` to confirm it landed as a brand-new version with `change_source="revert"`, never overwriting the earlier entries. The opportunity and the measurement should both now read `status: "reverted"`.
 
-## Local development (without Docker)
+## Run locally, without Docker
+
+For developing Fluxen itself — editing Go or dashboard code with hot reload — rather than just running it. If you only want to *use* Fluxen, use [Deploy with Docker](#deploy-with-docker-recommended) above instead; this path is more setup for no benefit unless you're changing code.
+
+```bash
+git clone https://github.com/ManojVihari/Fluxen.git
+cd Fluxen
+```
 
 ### Backend
 
-Requires Go 1.26+, a running Postgres, and a running Redis. Integration tests additionally require a working Docker daemon (they use [testcontainers-go](https://golang.testcontainers.org/) to spin up disposable Postgres/Redis containers) — they skip automatically if Docker isn't available.
+Requires Go 1.26+, a running Postgres, and a running Redis. Don't have those installed locally? The fastest way is to let Compose run just the two datastores and nothing else:
+
+```bash
+docker compose up postgres redis -d
+```
+
+Integration tests additionally require a working Docker daemon (they use [testcontainers-go](https://golang.testcontainers.org/) to spin up disposable Postgres/Redis containers) — they skip automatically if Docker isn't available.
 
 ```bash
 cp .env.example .env
-# edit .env: set DATABASE_URL/REDIS_URL if not using the defaults, and
-# OPENAI_API_KEY if you want the gateway to actually reach OpenAI
+# Defaults already match `docker compose up postgres redis -d` above.
+# Only edit .env if you're pointing at Postgres/Redis running elsewhere,
+# or want the gateway to reach a real OpenAI account without going
+# through Settings → Providers in the dashboard.
 
 export $(grep -v '^#' .env | xargs)
 go run ./cmd/fluxen

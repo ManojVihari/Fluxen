@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { PageHero, Section, Card, Grid } from "@/components/ui";
+import { PageHero, Section, Card, Grid, Button, CodeBlock } from "@/components/ui";
 
 // Home (Part I of the PRD's public-website spec, Implementation Plan
 // Part L Phase 7). The gateway (proxy, routing, caching, budgets) is
@@ -17,20 +17,16 @@ export default function Home() {
         subtitle="Fluxen proxies OpenAI, Gemini, and Ollama traffic too — but that's the substrate, not the product. The product is finding what's inefficient, proving the fix against your real history, applying it safely, and confirming it actually worked."
       />
 
-      <div className="mx-auto flex max-w-3xl justify-center gap-3 pb-4">
-        <Link
-          href="/docs"
-          className="rounded-md bg-slate-900 px-5 py-2.5 text-sm font-medium text-white hover:bg-slate-700"
-        >
-          Get started
-        </Link>
-        <Link
-          href="/product"
-          className="rounded-md border border-slate-300 px-5 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
-        >
-          See the product
-        </Link>
+      <div className="mx-auto flex max-w-3xl justify-center gap-3 pb-8">
+        <Button href="/docs">Get started</Button>
+        <Button href="/product" variant="secondary">See the product</Button>
       </div>
+
+      <div className="mx-auto mb-6 max-w-lg px-6">
+        <CodeBlock label="one command, self-hosted">{`git clone https://github.com/ManojVihari/Fluxen.git
+cd Fluxen && docker compose up --build`}</CodeBlock>
+      </div>
+
       <p className="mb-12 text-center text-sm text-slate-500">
         Wondering how this is different from LiteLLM, Portkey, or a FinOps dashboard?{" "}
         <Link href="/why-fluxen" className="font-medium text-slate-700 underline underline-offset-2 hover:text-slate-900">
