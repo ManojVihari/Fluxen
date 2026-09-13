@@ -2,6 +2,11 @@
   "name": "fluxen-web",
   "private": true,
   "packageManager": "pnpm@9.15.0",
+  "pnpm": {
+    "overrides": {
+      "postcss": "8.5.28"
+    }
+  },
   "scripts": {
     "dev:dashboard": "pnpm --filter fluxen-dashboard dev",
     "dev:website": "pnpm --filter fluxen-website dev",
