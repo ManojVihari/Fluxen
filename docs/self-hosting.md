@@ -19,6 +19,53 @@ brings up exactly four services (`docker-compose.yml`):
 
 The gateway and control API share one process (`cmd/fluxen`) and one port (`8080`) — `/v1/*` is the OpenAI-compatible gateway, `/api/v1/*` is the control API the dashboard talks to, `/healthz`/`/readyz`/`/metrics` are unauthenticated operational endpoints.
 
+## Local development (without Docker)
+
+For developing Fluxen itself — editing Go or dashboard code with hot reload — rather than just running it. If you only want to *use* Fluxen, use `docker compose up` above instead; this path is more setup for no benefit unless you're changing code.
+
+```bash
+git clone https://github.com/ManojVihari/Fluxen.git
+cd Fluxen
+```
+
+**Backend.** Requires Go 1.26+, a running Postgres, and a running Redis. Don't have those installed locally? Let Compose run just the two datastores and nothing else:
+
+```bash
+docker compose up postgres redis -d
+
+cp .env.example .env   # defaults already match the command above
+export $(grep -v '^#' .env | xargs)
+go run ./cmd/fluxen
+```
+
+Manage migrations and demo data with `fluxenctl`:
+
+```bash
+go run ./cmd/fluxenctl migrate up
+go run ./cmd/fluxenctl migrate status
+go run ./cmd/fluxenctl seed --demo
+```
+
+Run tests:
+
+```bash
+go vet ./...
+go test ./... -count=1     # full suite, requires Docker (testcontainers)
+go test ./... -short       # unit tests only, no Docker required
+```
+
+**Frontend.** Requires Node.js 22+ and pnpm (`corepack enable` will provide it).
+
+```bash
+cd web
+pnpm install
+pnpm --filter fluxen-dashboard dev   # http://localhost:3000
+pnpm --filter fluxen-website dev     # http://localhost:3001
+pnpm build                            # builds both apps
+```
+
+The dashboard talks to the control API at `NEXT_PUBLIC_API_BASE_URL` (default `http://localhost:8080`) and the gateway at `NEXT_PUBLIC_GATEWAY_BASE_URL` (default `http://localhost:8080/v1`) — both browser-side fetches, so point them at wherever `fluxen` is actually reachable from your browser.
+
 ## Environment variables
 
 `docker compose up` needs zero configuration: `DATABASE_URL` and `REDIS_URL` are already set by `docker-compose.yml` for container-to-container traffic, and every provider credential (OpenAI, Gemini, Ollama, ...) is added after first login from Settings → Providers, encrypted at rest with a key Fluxen generates and persists itself on first boot — no operator-supplied secret required. See `.env.example` for the full list with inline documentation. Every variable below is optional; it exists for operators who want to override the zero-config defaults, not because any of them are required to boot:
