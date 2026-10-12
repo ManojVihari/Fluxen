@@ -4,27 +4,14 @@ Reach a working, measured optimization outcome in about 15 minutes, using only D
 
 ## 1. Prerequisites
 
-- Docker and Docker Compose.
-- An OpenAI API key (Gemini and Ollama are optional — you can add them later from Settings → Providers or via env vars; see [Provider setup](./providers.md)).
+Docker and Docker Compose. Nothing else — no API key, no `.env` file, no encryption key to generate. Every provider credential (OpenAI, Gemini, Ollama) is added from the dashboard after first login; see [Provider setup](./providers.md).
 
-## 2. Configure
-
-```bash
-git clone <this repository>
-cd fluxen
-cp .env.example .env
-```
-
-Edit `.env` and set at least:
+## 2. Clone and run
 
 ```bash
-OPENAI_API_KEY=sk-...
-```
-
-## 3. Run
-
-```bash
-docker compose up
+git clone https://github.com/ManojVihari/Fluxen.git
+cd Fluxen
+docker compose up --build
 ```
 
 This starts exactly four containers: Postgres, Redis, the combined `fluxen` gateway + control binary, and the `dashboard`. Migrations apply automatically on boot.
@@ -32,15 +19,19 @@ This starts exactly four containers: Postgres, Redis, the combined `fluxen` gate
 - Dashboard: http://localhost:3000
 - Gateway/control API: http://localhost:8080
 
-## 4. First-run setup
+## 3. First-run setup
 
-Open the dashboard. Since no organization exists yet, you'll land on the setup wizard: create your organization name, owner email, and password. This also logs you in.
+Open the dashboard. Since no organization exists yet, you'll land on the setup wizard: create your organization name, owner email, and password. This also logs you in, and drops you into a short onboarding flow for the next two steps.
+
+## 4. Add a provider credential
+
+From **Settings → Providers**, add an OpenAI, Gemini, or self-hosted Ollama credential. It's encrypted at rest with a key Fluxen generates and persists itself on first boot — nothing to configure. Without a credential, the gateway still runs, but every chat request returns `503 no_provider_credential` until one exists.
 
 ## 5. Create an application and connect a client
 
 1. From Applications, click **New application** and give it a name.
-2. On the application's **Keys** tab, click **Copy connection details** — this gives you a `base_url` and an `fx_`-prefixed API key.
-3. Point your existing OpenAI client at that `base_url` with that key instead of your real OpenAI credential:
+2. On the application's **Connect** tab, click **Generate API key** — the raw key is shown exactly once, with ready-to-use Python, Node, and curl snippets.
+3. Point your existing OpenAI client at Fluxen by changing only its `base_url` and `api_key`:
 
 ```python
 from openai import OpenAI
